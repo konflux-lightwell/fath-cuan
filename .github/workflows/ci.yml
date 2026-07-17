@@ -12,10 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev]"
-      - run: ruff check fath_cuan/ tests/
-      - run: ruff format --check fath_cuan/ tests/
-      - run: mypy fath_cuan/
+      - run: pip install tox
+      - run: tox -e lint,type
 
   test:
     runs-on: ubuntu-latest
@@ -27,5 +25,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: pytest tests/ -v
+      - run: pip install tox
+      - run: tox -e test
