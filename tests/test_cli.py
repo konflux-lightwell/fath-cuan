@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from fath_cuan.cli import main
+from tests.conftest import SAMPLE_INPUT_DATA
 
 
 def test_cli_version() -> None:
@@ -24,7 +26,7 @@ def test_cli_process_from_stdin() -> None:
     result = runner.invoke(
         main,
         ["process", "-"],
-        input='{"id": "CVE-2024-1234", "description": "test"}',
+        input=json.dumps(SAMPLE_INPUT_DATA),
     )
     assert result.exit_code != 0
 
