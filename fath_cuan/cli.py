@@ -50,18 +50,19 @@ def process(
 
     if output_format in ("osv", "all"):
         osv_doc = osv_converter.convert(doc)
-        results["osv"] = osv_doc.model_dump()
+        results["osv"] = (osv_doc.id, osv_doc.model_dump(exclude_none=True))
 
     if output_format in ("vex", "all"):
         vex_doc = vex_converter.convert(doc)
-        results["vex"] = vex_doc.model_dump()
+        results["vex"] = ("vex", vex_doc.model_dump())
 
     if use_stdout:
-        if len(results) == 1:
-            write_to_stdout(next(iter(results.values())))
+        payloads = {k: v[1] for k, v in results.items()}
+        if len(payloads) == 1:
+            write_to_stdout(next(iter(payloads.values())))
         else:
-            write_to_stdout(results)
+            write_to_stdout(payloads)
     else:
-        for fmt, data in results.items():
-            path = write_to_file(data, output_dir, f"{fmt}.json")
+        for _fmt, (name, data) in results.items():
+            path = write_to_file(data, output_dir, f"{name}.json")
             click.echo(f"Wrote {path}")
