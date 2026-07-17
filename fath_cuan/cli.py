@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import click
 
 import fath_cuan
-from fath_cuan.converters import osv as osv_converter
-from fath_cuan.converters import vex as vex_converter
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
-from fath_cuan.models.input import InputDocument
+from fath_cuan.workflow import process_all, process_osv, process_vex
 
 
 @click.group()
@@ -44,25 +41,23 @@ def process(
     """Process INPUT JSON into OSV and/or VEX files."""
     source = None if input == "-" else input
     raw = read_input(source)
-    doc = InputDocument.from_dict(raw)
 
-    results: dict[str, Any] = {}
-
-    if output_format in ("osv", "all"):
-        osv_doc = osv_converter.convert(doc)
-        results["osv"] = (osv_doc.id, osv_doc.model_dump(exclude_none=True))
-
-    if output_format in ("vex", "all"):
-        vex_doc = vex_converter.convert(doc)
-        results["vex"] = ("vex", vex_doc.model_dump())
+    if output_format == "all":
+        results = process_all(raw)
+    elif output_format == "osv":
+        results = {"osv": process_osv(raw)}
+    elif output_format == "vex":
+        results = {"vex": process_vex(raw)}
+    else:
+        raise ValueError(f"Invalid output format: {output_format}")
 
     if use_stdout:
-        payloads = {k: v[1] for k, v in results.items()}
-        if len(payloads) == 1:
-            write_to_stdout(next(iter(payloads.values())))
+        if len(results) == 1:
+            write_to_stdout(next(iter(results.values())))
         else:
-            write_to_stdout(payloads)
+            write_to_stdout(results)
     else:
-        for _fmt, (name, data) in results.items():
+        for _fmt, data in results.items():
+            name = data.get("id", _fmt)
             path = write_to_file(data, output_dir, f"{name}.json")
             click.echo(f"Wrote {path}")
