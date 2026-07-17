@@ -7,7 +7,7 @@ import click
 import fath_cuan
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
-from fath_cuan.workflow import process_all, process_osv, process_vex
+from fath_cuan.workflow import process_osv, process_vex
 
 
 @click.group()
@@ -42,22 +42,20 @@ def process(
     source = None if input == "-" else input
     raw = read_input(source)
 
-    if output_format == "all":
-        results = process_all(raw)
-    elif output_format == "osv":
-        results = {"osv": process_osv(raw)}
-    elif output_format == "vex":
-        results = {"vex": process_vex(raw)}
-    else:
-        raise ValueError(f"Invalid output format: {output_format}")
+    if output_format in ("osv", "all"):
+        osv_records = process_osv(raw)
+        for record in osv_records:
+            if use_stdout:
+                write_to_stdout(record)
+            else:
+                filename = f"{record['id']}.json"
+                path = write_to_file(record, output_dir, filename)
+                click.echo(f"Wrote {path}")
 
-    if use_stdout:
-        if len(results) == 1:
-            write_to_stdout(next(iter(results.values())))
+    if output_format in ("vex", "all"):
+        vex_data = process_vex(raw)
+        if use_stdout:
+            write_to_stdout(vex_data)
         else:
-            write_to_stdout(results)
-    else:
-        for _fmt, data in results.items():
-            name = data.get("id", _fmt)
-            path = write_to_file(data, output_dir, f"{name}.json")
+            path = write_to_file(vex_data, output_dir, "vex.json")
             click.echo(f"Wrote {path}")

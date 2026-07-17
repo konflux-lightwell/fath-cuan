@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class Severity(BaseModel):
+    type: str
+    score: str
+
+
+class Reference(BaseModel):
+    url: str
+    type: str
 
 
 class Event(BaseModel):
@@ -30,7 +40,7 @@ class Credit(BaseModel):
 
 
 class LightwellMeta(BaseModel):
-    source: str = "lightwell-pipeline"
+    source: str = "pnc-build"
     backport_base_version: str
     build_id: str
 
@@ -43,7 +53,11 @@ class OSVDocument(BaseModel):
     schema_version: str = "1.6.8"
     id: str
     modified: str
-    aliases: list[str]
+    severity: list[Severity] = Field(default_factory=list)
+    references: list[Reference] = Field(default_factory=list)
+    summary: str = ""
+    details: str = ""
+    aliases: list[str] = Field(default_factory=list)
     affected: list[AffectedEntry]
-    credits: list[Credit]
+    credits: list[Credit] = Field(default_factory=list)
     database_specific: DatabaseSpecific
