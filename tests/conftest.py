@@ -6,7 +6,7 @@ import pytest
 SAMPLE_INPUT_DATA = {
     "buildId": "BQA6SUOGYCIAA",
     "created": "2026-07-15T14:02:27+00:00",
-    "cves": ["CVE-A"],
+    "cves": ["CVE-2024-25710"],
     "evidence": {
         "additionalTags": ["tag-1"],
         "digestRef": "quay.io/example@sha256:abc123",
@@ -14,8 +14,18 @@ SAMPLE_INPUT_DATA = {
     },
     "gavCount": 1,
     "gavIndexTag": "idx-BQA6SUOGYCIAA",
-    "gavs": ["org.example:artifact:1.0.0"],
-    "primaryGav": "org.example:artifact:1.0.0",
+    "gavs": ["org.example:artifact:1.0.0.rhlw-00001"],
+    "primaryGav": "org.example:artifact:1.0.0.rhlw-00001",
+}
+
+SAMPLE_MULTI_CVE_DATA = {
+    **SAMPLE_INPUT_DATA,
+    "cves": ["CVE-2024-25710", "CVE-2024-26308"],
+}
+
+SAMPLE_DUPLICATE_CVE_DATA = {
+    **SAMPLE_INPUT_DATA,
+    "cves": ["CVE-2024-25710", "CVE-2024-25710", "CVE-2024-26308"],
 }
 
 

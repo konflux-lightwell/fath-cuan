@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
@@ -14,7 +15,8 @@ def test_cli_version() -> None:
     assert "0.1.0" in result.output
 
 
-def test_cli_process_osv_to_stdout() -> None:
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_osv_to_stdout(mock_fetch: object) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -24,10 +26,11 @@ def test_cli_process_osv_to_stdout() -> None:
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["schema_version"] == "1.6.8"
-    assert data["id"] == "x_RHLW-BQA6SUOGYCIAA"
+    assert data["id"] == "x_RHLW-CVE-2024-25710-1.0.0"
 
 
-def test_cli_process_osv_to_file(tmp_path: Path) -> None:
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_osv_to_file(mock_fetch: object, tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -35,13 +38,14 @@ def test_cli_process_osv_to_file(tmp_path: Path) -> None:
         input=json.dumps(SAMPLE_INPUT_DATA),
     )
     assert result.exit_code == 0
-    output_file = tmp_path / "x_RHLW-BQA6SUOGYCIAA.json"
+    output_file = tmp_path / "x_RHLW-CVE-2024-25710-1.0.0.json"
     assert output_file.exists()
     data = json.loads(output_file.read_text())
-    assert data["id"] == "x_RHLW-BQA6SUOGYCIAA"
+    assert data["id"] == "x_RHLW-CVE-2024-25710-1.0.0"
 
 
-def test_cli_process_from_file(sample_json_file: Path, tmp_path: Path) -> None:
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_from_file(mock_fetch: object, sample_json_file: Path, tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -50,7 +54,8 @@ def test_cli_process_from_file(sample_json_file: Path, tmp_path: Path) -> None:
     assert result.exit_code == 0
 
 
-def test_cli_process_from_stdin() -> None:
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_from_stdin(mock_fetch: object) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
