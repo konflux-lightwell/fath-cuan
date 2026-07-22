@@ -75,8 +75,10 @@ def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
             vulns = data.get("vulnerabilities", [])
             if vulns:
                 return vulns[0].get("cve", {})  # type: ignore[no-any-return]
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-        pass
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        import logging
+
+        logging.warning("NVD fetch failed for %s: %s", cve_id, e)
     return None
 
 
@@ -114,7 +116,7 @@ def _extract_severity(upstream: dict[str, Any], nvd: dict[str, Any] | None) -> l
 
 
 def _classify_reference_type(url: str, original_type: str) -> str:
-    """Classify a reference URL as FIX, ADVISORY, or WEB."""
+    """Classify a reference URL as FIX, ADVISORY, or pass through the original type."""
     if "/commit/" in url or "/commits/" in url:
         return "FIX"
     for pattern in _ADVISORY_PATTERNS:
