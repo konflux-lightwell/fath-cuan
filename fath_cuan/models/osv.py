@@ -31,6 +31,7 @@ class Package(BaseModel):
 
 class AffectedEntry(BaseModel):
     package: Package
+    versions: list[str] = Field(default_factory=list)
     ranges: list[Range]
 
 
@@ -43,6 +44,8 @@ class LightwellMeta(BaseModel):
     source: str = "pnc-build"
     backport_base_version: str
     build_id: str
+    embargo_status: str | None = None
+    embargo_expires: str | None = None
 
 
 class DatabaseSpecific(BaseModel):
@@ -52,7 +55,9 @@ class DatabaseSpecific(BaseModel):
 class OSVDocument(BaseModel):
     schema_version: str = "1.6.8"
     id: str
+    published: str | None = None
     modified: str
+    withdrawn: str | None = None
     severity: list[Severity] = Field(default_factory=list)
     references: list[Reference] = Field(default_factory=list)
     summary: str = ""

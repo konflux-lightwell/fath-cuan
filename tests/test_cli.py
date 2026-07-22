@@ -15,8 +15,9 @@ def test_cli_version() -> None:
     assert "0.1.0" in result.output
 
 
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_cli_process_osv_to_stdout(mock_fetch: object) -> None:
+def test_cli_process_osv_to_stdout(mock_osv: object, mock_nvd: object) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -29,8 +30,9 @@ def test_cli_process_osv_to_stdout(mock_fetch: object) -> None:
     assert data["id"] == "x_RHLW-CVE-2024-25710-1.0.0"
 
 
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_cli_process_osv_to_file(mock_fetch: object, tmp_path: Path) -> None:
+def test_cli_process_osv_to_file(mock_osv: object, mock_nvd: object, tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -44,8 +46,11 @@ def test_cli_process_osv_to_file(mock_fetch: object, tmp_path: Path) -> None:
     assert data["id"] == "x_RHLW-CVE-2024-25710-1.0.0"
 
 
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_cli_process_from_file(mock_fetch: object, sample_json_file: Path, tmp_path: Path) -> None:
+def test_cli_process_from_file(
+    mock_osv: object, mock_nvd: object, sample_json_file: Path, tmp_path: Path
+) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -54,8 +59,9 @@ def test_cli_process_from_file(mock_fetch: object, sample_json_file: Path, tmp_p
     assert result.exit_code == 0
 
 
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_cli_process_from_stdin(mock_fetch: object) -> None:
+def test_cli_process_from_stdin(mock_osv: object, mock_nvd: object) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,

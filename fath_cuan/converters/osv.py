@@ -22,6 +22,17 @@ from fath_cuan.models.osv import (
 
 _OSV_ID_PREFIX = "x_RHLW-"
 _OSV_API = "https://api.osv.dev/v1/vulns"
+_NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+_ADVISORY_PATTERNS = (
+    "/advisories/",
+    "/advisory/",
+    "nvd.nist.gov/vuln/detail/",
+    "GHSA-",
+    "security.netapp.com/advisory/",
+    "access.redhat.com/errata/",
+    "access.redhat.com/security/cve/",
+)
 
 
 def _parse_gav(gav: str) -> tuple[str, str, str]:
@@ -54,19 +65,66 @@ def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
         return None
 
 
-def _extract_severity(upstream: dict[str, Any]) -> list[Severity]:
-    """Extract CVSS severity from upstream OSV record."""
+def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
+    """Fetch CVE data from NVD as a fallback for missing summary/severity."""
+    url = f"{_NVD_API}?cveId={cve_id}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            vulns = data.get("vulnerabilities", [])
+            if vulns:
+                return vulns[0].get("cve", {})  # type: ignore[no-any-return]
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        pass
+    return None
+
+
+def _extract_severity(upstream: dict[str, Any], nvd: dict[str, Any] | None) -> list[Severity]:
+    """Extract CVSS severity from upstream OSV and NVD, including v3.1 and v4.0."""
     result: list[Severity] = []
+    seen_types: set[str] = set()
+
     for s in upstream.get("severity", []):
         score_type = s.get("type", "")
         score = s.get("score", "")
-        if score_type and score:
+        if score_type and score and score_type not in seen_types:
             result.append(Severity(type=score_type, score=score))
+            seen_types.add(score_type)
+
+    if nvd and "CVSS_V3" not in seen_types:
+        metrics = nvd.get("metrics", {})
+        for v31 in metrics.get("cvssMetricV31", []):
+            vector = v31.get("cvssData", {}).get("vectorString", "")
+            if vector:
+                result.append(Severity(type="CVSS_V3", score=vector))
+                seen_types.add("CVSS_V3")
+                break
+
+    if nvd and "CVSS_V4" not in seen_types:
+        metrics = nvd.get("metrics", {})
+        for v40 in metrics.get("cvssMetricV40", []):
+            vector = v40.get("cvssData", {}).get("vectorString", "")
+            if vector:
+                result.append(Severity(type="CVSS_V4", score=vector))
+                seen_types.add("CVSS_V4")
+                break
+
     return result
 
 
+def _classify_reference_type(url: str, original_type: str) -> str:
+    """Classify a reference URL as FIX, ADVISORY, or WEB."""
+    if "/commit/" in url or "/commits/" in url:
+        return "FIX"
+    for pattern in _ADVISORY_PATTERNS:
+        if pattern in url:
+            return "ADVISORY"
+    return original_type
+
+
 def _extract_references(upstream: dict[str, Any], cve_id: str) -> list[Reference]:
-    """Extract references from upstream OSV, fix types for commit URLs."""
+    """Extract references from upstream OSV with proper type classification."""
     refs: list[Reference] = []
     seen: set[str] = set()
     for r in upstream.get("references", []):
@@ -74,14 +132,12 @@ def _extract_references(upstream: dict[str, Any], cve_id: str) -> list[Reference
         if not url or url in seen:
             continue
         seen.add(url)
-        ref_type = r.get("type", "WEB")
-        if "/commit/" in url or "/commits/" in url:
-            ref_type = "FIX"
+        ref_type = _classify_reference_type(url, r.get("type", "WEB"))
         refs.append(Reference(url=url, type=ref_type))
 
     nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
     if nvd_url not in seen:
-        refs.append(Reference(url=nvd_url, type="WEB"))
+        refs.append(Reference(url=nvd_url, type="ADVISORY"))
     return refs
 
 
@@ -93,18 +149,42 @@ def _extract_aliases(upstream: dict[str, Any], cve_id: str) -> list[str]:
     return aliases
 
 
-def convert(doc: InputDocument) -> list[OSVDocument]:
+def _extract_summary_details(
+    upstream: dict[str, Any] | None, nvd: dict[str, Any] | None
+) -> tuple[str, str]:
+    """Extract summary and details, falling back to NVD if upstream is missing."""
+    summary = ""
+    details = ""
+
+    if upstream:
+        summary = upstream.get("summary", "")
+        details = upstream.get("details", "")
+
+    if not summary and nvd:
+        descriptions = nvd.get("descriptions", [])
+        for desc in descriptions:
+            if desc.get("lang") == "en":
+                summary = desc.get("value", "")
+                if not details:
+                    details = summary
+                break
+
+    return summary, details
+
+
+def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
     """Convert a PNC gav-index into one OSV record per CVE.
 
-    Matches the balor-fianna reference format exactly: one file per CVE,
-    with upstream severity/summary/details/references from osv.dev.
+    Matches the Lightwell OSV format specification. Fetches upstream CVE
+    data from osv.dev with NVD fallback for missing fields.
     """
     group_id, artifact_id, version = _parse_gav(doc.primary_gav)
     base_ver = _base_version(version)
     coordinates = f"{group_id}:{artifact_id}"
     purl = f"pkg:maven/{group_id}/{artifact_id}"
 
-    modified = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
+    published = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
+    modified = published
 
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()
@@ -116,25 +196,56 @@ def convert(doc: InputDocument) -> list[OSVDocument]:
 
         osv_id = f"{_OSV_ID_PREFIX}{cve_id}-{base_ver}"
 
+        if embargo:
+            record = OSVDocument(
+                id=osv_id,
+                published=published,
+                modified=modified,
+                aliases=[],
+                affected=[
+                    AffectedEntry(
+                        package=Package(name="", purl=None),
+                        ranges=[],
+                    )
+                ],
+                credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+                database_specific=DatabaseSpecific(
+                    lightwell=LightwellMeta(
+                        backport_base_version=base_ver,
+                        build_id=doc.build_id,
+                        embargo_status="pre-disclosure",
+                    )
+                ),
+            )
+            records.append(record)
+            continue
+
         upstream = _fetch_upstream_osv(cve_id)
+        nvd = None
 
         severity: list[Severity] = []
         references: list[Reference] = [
-            Reference(url=f"https://nvd.nist.gov/vuln/detail/{cve_id}", type="WEB")
+            Reference(url=f"https://nvd.nist.gov/vuln/detail/{cve_id}", type="ADVISORY")
         ]
         aliases: list[str] = [cve_id]
         summary = ""
         details = ""
 
         if upstream:
-            severity = _extract_severity(upstream)
             references = _extract_references(upstream, cve_id)
             aliases = _extract_aliases(upstream, cve_id)
             summary = upstream.get("summary", "")
             details = upstream.get("details", "")
 
+        if not summary or not severity:
+            nvd = _fetch_nvd(cve_id)
+
+        severity = _extract_severity(upstream or {}, nvd)
+        summary, details = _extract_summary_details(upstream, nvd)
+
         affected = AffectedEntry(
             package=Package(name=coordinates, purl=purl),
+            versions=[base_ver],
             ranges=[
                 Range(
                     events=[
@@ -147,6 +258,7 @@ def convert(doc: InputDocument) -> list[OSVDocument]:
 
         record = OSVDocument(
             id=osv_id,
+            published=published,
             modified=modified,
             severity=severity,
             references=references,
