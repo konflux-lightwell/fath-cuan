@@ -7,10 +7,10 @@ from fath_cuan.converters import vex as vex_converter
 from fath_cuan.models.input import InputDocument
 
 
-def process_osv(input_json: dict[str, Any]) -> list[dict[str, Any]]:
+def process_osv(input_json: dict[str, Any], embargo: bool = False) -> list[dict[str, Any]]:
     """Convert input JSON into a list of OSV records (one per CVE)."""
     doc = InputDocument.from_dict(input_json)
-    osv_docs = osv_converter.convert(doc)
+    osv_docs = osv_converter.convert(doc, embargo=embargo)
     return [d.model_dump(exclude_none=True) for d in osv_docs]
 
 

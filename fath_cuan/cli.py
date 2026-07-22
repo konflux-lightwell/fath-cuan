@@ -32,18 +32,20 @@ def main() -> None:
     default="all",
     help="Which output format to generate.",
 )
+@click.option("--embargo", is_flag=True, help="Generate pre-disclosure embargo stubs.")
 def process(
     input: str,
     output_dir: Path,
     use_stdout: bool,
     output_format: str,
+    embargo: bool,
 ) -> None:
     """Process INPUT JSON into OSV and/or VEX files."""
     source = None if input == "-" else input
     raw = read_input(source)
 
     if output_format in ("osv", "all"):
-        osv_records = process_osv(raw)
+        osv_records = process_osv(raw, embargo=embargo)
         for record in osv_records:
             if use_stdout:
                 write_to_stdout(record)
