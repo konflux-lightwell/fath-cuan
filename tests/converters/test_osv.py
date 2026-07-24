@@ -8,6 +8,7 @@ from tests.conftest import (
     SAMPLE_DUPLICATE_CVE_DATA,
     SAMPLE_INPUT_DATA,
     SAMPLE_MULTI_CVE_DATA,
+    SAMPLE_WITH_UPSTREAM_VERSION,
 )
 
 
@@ -294,3 +295,36 @@ def test_classify_reference_type_advisory() -> None:
 
 def test_classify_reference_type_web() -> None:
     assert _classify_reference_type("https://example.com/blog/post", "WEB") == "WEB"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_upstream_version_used_for_versions_array(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_WITH_UPSTREAM_VERSION)
+    results = convert(doc)
+    assert results[0].affected[0].versions == ["1.33"]
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_upstream_version_used_for_id(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_WITH_UPSTREAM_VERSION)
+    results = convert(doc)
+    assert results[0].id == "x_RHLW-CVE-2024-25710-1.33"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_upstream_version_used_for_base_version_meta(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_WITH_UPSTREAM_VERSION)
+    results = convert(doc)
+    assert results[0].database_specific.lightwell.backport_base_version == "1.33"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_falls_back_to_base_version_without_upstream(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    assert results[0].affected[0].versions == ["1.0.0"]
+    assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"
