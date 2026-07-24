@@ -143,6 +143,29 @@ def _extract_references(upstream: dict[str, Any], cve_id: str) -> list[Reference
     return refs
 
 
+def _extract_introduced(upstream: dict[str, Any], coordinates: str) -> str:
+    """Extract the introduced version from upstream OSV ECOSYSTEM range.
+
+    Searches the upstream affected entries for a matching Maven package
+    and returns the introduced version from its ECOSYSTEM range.
+    Falls back to "0" if no matching range is found.
+    """
+    for a in upstream.get("affected", []):
+        pkg = a.get("package", {})
+        if pkg.get("ecosystem") != "Maven":
+            continue
+        upstream_name = pkg.get("name", "")
+        if upstream_name != coordinates and coordinates not in upstream_name:
+            continue
+        for r in a.get("ranges", []):
+            if r.get("type") != "ECOSYSTEM":
+                continue
+            for e in r.get("events", []):
+                if "introduced" in e:
+                    return str(e["introduced"])
+    return "0"
+
+
 def _extract_aliases(upstream: dict[str, Any], cve_id: str) -> list[str]:
     """Extract aliases from upstream OSV, ensuring the CVE is included."""
     aliases = list(upstream.get("aliases", []))
@@ -245,13 +268,15 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
         severity = _extract_severity(upstream or {}, nvd)
         summary, details = _extract_summary_details(upstream, nvd)
 
+        introduced = _extract_introduced(upstream, coordinates) if upstream else "0"
+
         affected = AffectedEntry(
             package=Package(name=coordinates, purl=purl),
             versions=[base_ver],
             ranges=[
                 Range(
                     events=[
-                        Event(introduced="0"),
+                        Event(introduced=introduced),
                         Event(fixed=version),
                     ]
                 )
