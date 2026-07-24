@@ -181,7 +181,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
     data from osv.dev with NVD fallback for missing fields.
     """
     group_id, artifact_id, version = _parse_gav(doc.primary_gav)
-    base_ver = _base_version(version)
+    base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
     coordinates = f"{group_id}:{artifact_id}"
     purl = f"pkg:maven/{group_id}/{artifact_id}"
 

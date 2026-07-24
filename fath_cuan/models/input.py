@@ -26,6 +26,7 @@ class InputDocument(BaseModel):
     gav_index_tag: str = Field(alias="gavIndexTag")
     gavs: list[str]
     primary_gav: str = Field(alias="primaryGav")
+    upstream_version: str | None = Field(default=None, alias="upstreamVersion")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InputDocument:

@@ -28,6 +28,13 @@ SAMPLE_DUPLICATE_CVE_DATA = {
     "cves": ["CVE-2024-25710", "CVE-2024-25710", "CVE-2024-26308"],
 }
 
+SAMPLE_WITH_UPSTREAM_VERSION = {
+    **SAMPLE_INPUT_DATA,
+    "primaryGav": "org.yaml:snakeyaml:1.33.0.rhlw-00001",
+    "gavs": ["org.yaml:snakeyaml:1.33.0.rhlw-00001"],
+    "upstreamVersion": "1.33",
+}
+
 
 @pytest.fixture
 def sample_json_file(tmp_path: Path) -> Path:
