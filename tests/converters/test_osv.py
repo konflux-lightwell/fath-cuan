@@ -2,7 +2,13 @@ from unittest.mock import patch
 
 import pytest
 
-from fath_cuan.converters.osv import _base_version, _classify_reference_type, _parse_gav, convert
+from fath_cuan.converters.osv import (
+    _base_version,
+    _classify_reference_type,
+    _extract_introduced,
+    _parse_gav,
+    convert,
+)
 from fath_cuan.models.input import InputDocument
 from tests.conftest import (
     SAMPLE_DUPLICATE_CVE_DATA,
@@ -328,3 +334,98 @@ def test_falls_back_to_base_version_without_upstream(mock_osv: object, mock_nvd:
     results = convert(doc)
     assert results[0].affected[0].versions == ["1.0.0"]
     assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"
+
+
+def test_extract_introduced_from_ecosystem_range() -> None:
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.springframework:spring-webmvc"},
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "6.1.0"}, {"fixed": "6.1.13"}],
+                    }
+                ],
+            }
+        ]
+    }
+    assert _extract_introduced(upstream, "org.springframework:spring-webmvc") == "6.1.0"
+
+
+def test_extract_introduced_falls_back_to_zero() -> None:
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Go", "name": "golang.org/x/crypto"},
+                "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}],
+            }
+        ]
+    }
+    assert _extract_introduced(upstream, "org.example:artifact") == "0"
+
+
+def test_extract_introduced_no_matching_package() -> None:
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.other:other"},
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "1.0"}, {"fixed": "1.5"}],
+                    }
+                ],
+            }
+        ]
+    }
+    assert _extract_introduced(upstream, "org.example:artifact") == "0"
+
+
+def test_extract_introduced_zero_in_upstream() -> None:
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.yaml:snakeyaml"},
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "0"}, {"fixed": "2.0"}],
+                    }
+                ],
+            }
+        ]
+    }
+    assert _extract_introduced(upstream, "org.yaml:snakeyaml") == "0"
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_introduced_from_upstream_in_full_record(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.return_value = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.example:artifact"},
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "0.9.0"}, {"fixed": "1.2.0"}],
+                    }
+                ],
+            }
+        ],
+    }
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    events = results[0].affected[0].ranges[0].events
+    assert events[0].introduced == "0.9.0"
+    assert events[1].fixed == "1.0.0.rhlw-00001"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_introduced_defaults_to_zero_without_upstream(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    events = results[0].affected[0].ranges[0].events
+    assert events[0].introduced == "0"
