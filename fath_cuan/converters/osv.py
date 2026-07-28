@@ -237,7 +237,6 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
                         backport_base_version=base_ver,
-                        build_id=doc.build_id,
                         embargo_status="pre-disclosure",
                     )
                 ),
@@ -297,7 +296,6 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             database_specific=DatabaseSpecific(
                 lightwell=LightwellMeta(
                     backport_base_version=base_ver,
-                    build_id=doc.build_id,
                 )
             ),
         )
