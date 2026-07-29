@@ -98,7 +98,6 @@ def test_base_version_stripped_in_metadata(mock_osv: object, mock_nvd: object) -
     results = convert(doc)
     lw = results[0].database_specific.lightwell
     assert lw.backport_base_version == "1.0.0"
-    assert lw.build_id == "BQA6SUOGYCIAA"
     assert lw.source == "pnc-build"
 
 

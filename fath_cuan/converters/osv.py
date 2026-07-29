@@ -197,11 +197,87 @@ def _extract_summary_details(
     return summary, details
 
 
-def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
-    """Convert a PNC gav-index into one OSV record per CVE.
+def _build_novel_record(
+    doc: InputDocument,
+    base_ver: str,
+    version: str,
+    coordinates: str,
+    purl: str,
+    published: str,
+    embargo: bool,
+) -> OSVDocument:
+    """Build an OSV record for a novel vulnerability (LW ID, no CVE)."""
+    osv_id = f"{_OSV_ID_PREFIX}{doc.lw_id}-{base_ver}"
 
-    Matches the Lightwell OSV format specification. Fetches upstream CVE
-    data from osv.dev with NVD fallback for missing fields.
+    if embargo:
+        return OSVDocument(
+            id=osv_id,
+            published=published,
+            modified=published,
+            aliases=[],
+            affected=[
+                AffectedEntry(
+                    package=Package(name="", purl=None),
+                    ranges=[],
+                )
+            ],
+            credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+            database_specific=DatabaseSpecific(
+                lightwell=LightwellMeta(
+                    source="novel-pipeline",
+                    backport_base_version=base_ver,
+                    lw_id=doc.lw_id,
+                    embargo_status="pre-disclosure",
+                )
+            ),
+        )
+
+    severity: list[Severity] = []
+    if doc.severity_score:
+        severity = [Severity(type="CVSS_V3", score=str(doc.severity_score))]
+
+    meta = LightwellMeta(
+        source="novel-pipeline",
+        backport_base_version=base_ver,
+        lw_id=doc.lw_id,
+    )
+    if doc.vulnerability_class:
+        meta.vulnerability_class = doc.vulnerability_class
+    if doc.finding_id:
+        meta.finding_id = doc.finding_id
+
+    return OSVDocument(
+        id=osv_id,
+        published=published,
+        modified=published,
+        severity=severity,
+        summary=doc.description or "",
+        details=doc.description or "",
+        aliases=[],
+        affected=[
+            AffectedEntry(
+                package=Package(name=coordinates, purl=purl),
+                versions=[base_ver],
+                ranges=[
+                    Range(
+                        events=[
+                            Event(introduced="0"),
+                            Event(fixed=version),
+                        ]
+                    )
+                ],
+            )
+        ],
+        credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+        database_specific=DatabaseSpecific(lightwell=meta),
+    )
+
+
+def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
+    """Convert a PNC gav-index into OSV records.
+
+    For known CVEs: one record per CVE, enriched from osv.dev/NVD.
+    For novel vulnerabilities (LW ID, no CVE): one record using input metadata.
     """
     group_id, artifact_id, version = _parse_gav(doc.primary_gav)
     base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
@@ -209,7 +285,9 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
     purl = f"pkg:maven/{group_id}/{artifact_id}"
 
     published = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
-    modified = published
+
+    if doc.is_novel:
+        return [_build_novel_record(doc, base_ver, version, coordinates, purl, published, embargo)]
 
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()
@@ -225,7 +303,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             record = OSVDocument(
                 id=osv_id,
                 published=published,
-                modified=modified,
+                modified=published,
                 aliases=[],
                 affected=[
                     AffectedEntry(
@@ -237,7 +315,6 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
                         backport_base_version=base_ver,
-                        build_id=doc.build_id,
                         embargo_status="pre-disclosure",
                     )
                 ),
@@ -286,7 +363,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
         record = OSVDocument(
             id=osv_id,
             published=published,
-            modified=modified,
+            modified=published,
             severity=severity,
             references=references,
             summary=summary,
@@ -297,7 +374,6 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             database_specific=DatabaseSpecific(
                 lightwell=LightwellMeta(
                     backport_base_version=base_ver,
-                    build_id=doc.build_id,
                 )
             ),
         )

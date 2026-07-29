@@ -27,6 +27,16 @@ class InputDocument(BaseModel):
     gavs: list[str]
     primary_gav: str = Field(alias="primaryGav")
     upstream_version: str | None = Field(default=None, alias="upstreamVersion")
+    lw_id: str | None = Field(default=None, alias="lwId")
+    vulnerability_class: str | None = Field(default=None, alias="vulnerabilityClass")
+    finding_id: str | None = Field(default=None, alias="findingId")
+    severity_score: float | None = Field(default=None, alias="severityScore")
+    description: str | None = Field(default=None, alias="description")
+
+    @property
+    def is_novel(self) -> bool:
+        """True if this is a novel vulnerability (has LW ID, no CVE)."""
+        return bool(self.lw_id) and not any(c.startswith("CVE-") for c in self.cves)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InputDocument:
