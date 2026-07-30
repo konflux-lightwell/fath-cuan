@@ -20,7 +20,7 @@ class InputDocument(BaseModel):
 
     build_id: str = Field(alias="buildId")
     created: datetime
-    cves: list[str]
+    vulns: list[str]
     evidence: Evidence
     gav_count: int = Field(alias="gavCount")
     gav_index_tag: str = Field(alias="gavIndexTag")

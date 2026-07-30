@@ -214,7 +214,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()
 
-    for cve_id in doc.cves:
+    for cve_id in doc.vulns:
         if cve_id in seen_cves:
             continue
         seen_cves.add(cve_id)

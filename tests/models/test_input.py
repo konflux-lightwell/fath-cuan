@@ -6,7 +6,7 @@ from fath_cuan.models.input import Evidence, InputDocument
 SAMPLE_INPUT = {
     "buildId": "BQA6SUOGYCIAA",
     "created": "2026-07-15T14:02:27+00:00",
-    "cves": ["CVE-A", "CVE-A"],
+    "vulns": ["CVE-A", "CVE-A"],
     "evidence": {
         "additionalTags": ["com.sun.xml.bind.external_relaxng-datatype_4.0.4.rhlw-dp-00002"],
         "digestRef": (
@@ -28,7 +28,7 @@ SAMPLE_INPUT = {
 def test_input_document_from_dict() -> None:
     doc = InputDocument.from_dict(SAMPLE_INPUT)
     assert doc.build_id == "BQA6SUOGYCIAA"
-    assert doc.cves == ["CVE-A", "CVE-A"]
+    assert doc.vulns == ["CVE-A", "CVE-A"]
     assert doc.gav_count == 17
     assert doc.gav_index_tag == "idx-BQA6SUOGYCIAA"
     assert doc.primary_gav == "com.sun.xml.bind.external:relaxng-datatype:4.0.4.rhlw-dp-00002"

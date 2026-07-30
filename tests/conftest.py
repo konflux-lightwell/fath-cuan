@@ -6,7 +6,7 @@ import pytest
 SAMPLE_INPUT_DATA = {
     "buildId": "BQA6SUOGYCIAA",
     "created": "2026-07-15T14:02:27+00:00",
-    "cves": ["CVE-2024-25710"],
+    "vulns": ["CVE-2024-25710"],
     "evidence": {
         "additionalTags": ["tag-1"],
         "digestRef": "quay.io/example@sha256:abc123",
@@ -20,12 +20,12 @@ SAMPLE_INPUT_DATA = {
 
 SAMPLE_MULTI_CVE_DATA = {
     **SAMPLE_INPUT_DATA,
-    "cves": ["CVE-2024-25710", "CVE-2024-26308"],
+    "vulns": ["CVE-2024-25710", "CVE-2024-26308"],
 }
 
 SAMPLE_DUPLICATE_CVE_DATA = {
     **SAMPLE_INPUT_DATA,
-    "cves": ["CVE-2024-25710", "CVE-2024-25710", "CVE-2024-26308"],
+    "vulns": ["CVE-2024-25710", "CVE-2024-25710", "CVE-2024-26308"],
 }
 
 SAMPLE_WITH_UPSTREAM_VERSION = {
