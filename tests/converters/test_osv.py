@@ -6,6 +6,7 @@ from fath_cuan.converters.osv import (
     _base_version,
     _classify_reference_type,
     _extract_introduced,
+    _is_useful_summary,
     _parse_gav,
     convert,
 )
@@ -428,3 +429,51 @@ def test_introduced_defaults_to_zero_without_upstream(mock_osv: object, mock_nvd
     results = convert(doc)
     events = results[0].affected[0].ranges[0].events
     assert events[0].introduced == "0"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Fixed.", False),
+        ("fixed", False),
+        ("Patch.", False),
+        ("Update", False),
+        ("Security fix.", False),
+        ("Bug fix", False),
+        ("", False),
+        ("Hi", False),
+        ("Apache Commons Compress: Denial of service", True),
+        ("Stack exhaustion in json-smart leads to denial of service", True),
+    ],
+)
+def test_is_useful_summary(text: str, expected: bool) -> None:
+    assert _is_useful_summary(text) == expected
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd")
+def test_useless_summary_falls_back_to_nvd(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.return_value = {
+        "summary": "Fixed.",
+        "details": "",
+        "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}],
+    }
+    mock_nvd.return_value = {
+        "descriptions": [{"lang": "en", "value": "Denial of service via crafted input"}],
+        "metrics": {},
+    }
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    assert results[0].summary == "Denial of service via crafted input"
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_useless_summary_falls_back_to_details(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.return_value = {
+        "summary": "Fixed.",
+        "details": "Remote code execution in Spring Framework\nMore details here.",
+    }
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    assert results[0].summary == "Remote code execution in Spring Framework"

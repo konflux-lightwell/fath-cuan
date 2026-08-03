@@ -174,6 +174,20 @@ def _extract_aliases(upstream: dict[str, Any], cve_id: str) -> list[str]:
     return aliases
 
 
+_USELESS_SUMMARIES = frozenset({
+    "fixed", "fixed.", "update", "update.", "patch", "patch.",
+    "security fix", "security fix.", "bug fix", "bug fix.",
+})
+
+
+def _is_useful_summary(text: str) -> bool:
+    """Return False for summaries that are too short or generic to be informative."""
+    stripped = text.strip()
+    if not stripped or len(stripped) < 5:
+        return False
+    return stripped.lower() not in _USELESS_SUMMARIES
+
+
 def _extract_summary_details(
     upstream: dict[str, Any] | None, nvd: dict[str, Any] | None
 ) -> tuple[str, str]:
@@ -182,8 +196,13 @@ def _extract_summary_details(
     details = ""
 
     if upstream:
-        summary = upstream.get("summary", "")
+        candidate = upstream.get("summary", "")
+        if _is_useful_summary(candidate):
+            summary = candidate
         details = upstream.get("details", "")
+
+    if not summary and details and _is_useful_summary(details):
+        summary = details.split("\n", 1)[0]
 
     if not summary and nvd:
         descriptions = nvd.get("descriptions", [])
@@ -261,7 +280,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             summary = upstream.get("summary", "")
             details = upstream.get("details", "")
 
-        if not summary or not severity:
+        if not _is_useful_summary(summary) or not severity:
             nvd = _fetch_nvd(cve_id)
 
         severity = _extract_severity(upstream or {}, nvd)
