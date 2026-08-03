@@ -206,7 +206,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
     group_id, artifact_id, version = _parse_gav(doc.primary_gav)
     base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
     coordinates = f"{group_id}:{artifact_id}"
-    purl = f"pkg:maven/{group_id}/{artifact_id}"
+    purl = f"pkg:maven/{group_id}/{artifact_id}@{version}"
 
     published = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published

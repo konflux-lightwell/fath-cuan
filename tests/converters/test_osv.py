@@ -78,7 +78,7 @@ def test_affected_package(mock_osv: object, mock_nvd: object) -> None:
     pkg = results[0].affected[0].package
     assert pkg.ecosystem == "Maven"
     assert pkg.name == "org.example:artifact"
-    assert pkg.purl == "pkg:maven/org.example/artifact"
+    assert pkg.purl == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
