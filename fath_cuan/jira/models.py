@@ -20,3 +20,11 @@ class JiraIssue(BaseModel):
             status=str((fields.get("status") or {}).get("name", "")),
             issuetype=str((fields.get("issuetype") or {}).get("name", "")),
         )
+
+
+class VulnerabilityData(BaseModel):
+    key: str
+    summary: str = ""
+    details: str = ""
+    severity: str = ""
+    cve_id: str = ""

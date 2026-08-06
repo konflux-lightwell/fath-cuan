@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fath_cuan.jira import JiraClient, JiraIssue
+from fath_cuan.jira.client import _extract_field_value, _parse_description
 
 
 class TestJiraClientInit:
@@ -253,3 +254,291 @@ class TestJiraIssueFromRaw:
         issue = JiraIssue.from_raw(raw)
         assert issue.status == ""
         assert issue.issue_type == ""
+
+
+class TestParseDescription:
+    def test_title_and_description(self) -> None:
+        text = "**Title:** Buffer overflow in libfoo\n**Description:** A critical vulnerability."
+        summary, details = _parse_description(text)
+        assert summary == "Buffer overflow in libfoo"
+        assert details == "A critical vulnerability."
+
+    def test_multiline_description(self) -> None:
+        text = (
+            "**Title:** Buffer overflow\n"
+            "**Description:** A critical vulnerability\n"
+            "that spans multiple lines\n"
+            "with additional context."
+        )
+        summary, details = _parse_description(text)
+        assert summary == "Buffer overflow"
+        expected = "A critical vulnerability\nthat spans multiple lines\nwith additional context."
+        assert details == expected
+
+    def test_description_stops_at_next_field(self) -> None:
+        text = (
+            "**Title:** Buffer overflow\n"
+            "**Description:** Some details here.\n"
+            "**Impact:** High"
+        )
+        summary, details = _parse_description(text)
+        assert summary == "Buffer overflow"
+        assert details == "Some details here."
+
+    def test_missing_title(self) -> None:
+        text = "**Description:** Only a description."
+        summary, details = _parse_description(text)
+        assert summary == ""
+        assert details == "Only a description."
+
+    def test_missing_description(self) -> None:
+        text = "**Title:** Only a title"
+        summary, details = _parse_description(text)
+        assert summary == "Only a title"
+        assert details == ""
+
+    def test_empty_text(self) -> None:
+        summary, details = _parse_description("")
+        assert summary == ""
+        assert details == ""
+
+    def test_no_matching_fields(self) -> None:
+        text = "Just some random text without any fields."
+        summary, details = _parse_description(text)
+        assert summary == ""
+        assert details == ""
+
+    def test_extra_whitespace(self) -> None:
+        text = "**Title:**   padded title  \n**Description:**   padded details  "
+        summary, details = _parse_description(text)
+        assert summary == "padded title"
+        assert details == "padded details"
+
+
+class TestExtractFieldValue:
+    def test_dict_with_value(self) -> None:
+        assert _extract_field_value({"value": "Critical", "id": "1"}) == "Critical"
+
+    def test_dict_with_name(self) -> None:
+        assert _extract_field_value({"name": "High", "id": "2"}) == "High"
+
+    def test_dict_prefers_value_over_name(self) -> None:
+        assert _extract_field_value({"value": "Critical", "name": "Crit"}) == "Critical"
+
+    def test_string_value(self) -> None:
+        assert _extract_field_value("LW-2026-0468") == "LW-2026-0468"
+
+    def test_none(self) -> None:
+        assert _extract_field_value(None) == ""
+
+    def test_empty_string(self) -> None:
+        assert _extract_field_value("") == ""
+
+    def test_empty_dict(self) -> None:
+        assert _extract_field_value({}) == ""
+
+
+SAMPLE_FIELD_DEFINITIONS = [
+    {"id": "summary", "name": "Summary", "custom": False},
+    {"id": "description", "name": "Description", "custom": False},
+    {"id": "customfield_10100", "name": "Severity", "custom": True},
+    {"id": "customfield_10200", "name": "CVE ID", "custom": True},
+]
+
+
+def _mock_urlopen_response(data: object) -> MagicMock:
+    """Create a mock urlopen context manager returning JSON data."""
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps(data).encode()
+    mock_response.__enter__ = MagicMock(return_value=mock_response)
+    mock_response.__exit__ = MagicMock(return_value=False)
+    return mock_response
+
+
+SAMPLE_VULN_SEARCH_RESPONSE = {
+    "total": 1,
+    "issues": [
+        {
+            "key": "VULN-1234",
+            "fields": {
+                "description": (
+                    "**Title:** Buffer overflow in libfoo\n"
+                    "**Description:** A buffer overflow vulnerability exists in libfoo "
+                    "allowing remote code execution."
+                ),
+                "customfield_10100": {"value": "Critical"},
+                "customfield_10200": "LW-2026-0468",
+            },
+        }
+    ],
+}
+
+
+class TestResolveFieldIds:
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_resolves_field_names_to_ids(self, mock_urlopen: MagicMock) -> None:
+        mock_urlopen.return_value = _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS)
+
+        client = JiraClient(server="https://jira.example.com")
+        field_map = client._resolve_field_ids()
+
+        assert field_map["Severity"] == "customfield_10100"
+        assert field_map["CVE ID"] == "customfield_10200"
+        assert field_map["Summary"] == "summary"
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_caches_results(self, mock_urlopen: MagicMock) -> None:
+        mock_urlopen.return_value = _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS)
+
+        client = JiraClient(server="https://jira.example.com")
+        client._resolve_field_ids()
+        client._resolve_field_ids()
+
+        mock_urlopen.assert_called_once()
+
+
+class TestFetchVulnerability:
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_returns_parsed_vulnerability(self, mock_urlopen: MagicMock) -> None:
+        mock_urlopen.side_effect = [
+            _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS),
+            _mock_urlopen_response(SAMPLE_VULN_SEARCH_RESPONSE),
+        ]
+
+        client = JiraClient(server="https://jira.example.com")
+        result = client.fetch_vulnerability("LW-2026-0468")
+
+        assert result is not None
+        assert result.key == "VULN-1234"
+        assert result.summary == "Buffer overflow in libfoo"
+        assert "remote code execution" in result.details
+        assert result.severity == "Critical"
+        assert result.cve_id == "LW-2026-0468"
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_returns_none_when_cve_id_mismatch(self, mock_urlopen: MagicMock) -> None:
+        response = {
+            "total": 1,
+            "issues": [
+                {
+                    "key": "VULN-1234",
+                    "fields": {
+                        "description": "**Title:** Something\n**Description:** Details",
+                        "customfield_10100": {"value": "High"},
+                        "customfield_10200": "LW-2026-9999",
+                    },
+                }
+            ],
+        }
+        mock_urlopen.side_effect = [
+            _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS),
+            _mock_urlopen_response(response),
+        ]
+
+        client = JiraClient(server="https://jira.example.com")
+        result = client.fetch_vulnerability("LW-2026-0468")
+
+        assert result is None
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_returns_none_when_no_issues(self, mock_urlopen: MagicMock) -> None:
+        mock_urlopen.side_effect = [
+            _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS),
+            _mock_urlopen_response(SAMPLE_JIRA_EMPTY_RESPONSE),
+        ]
+
+        client = JiraClient(server="https://jira.example.com")
+        result = client.fetch_vulnerability("LW-2026-0468")
+
+        assert result is None
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_skips_mismatch_returns_matching(self, mock_urlopen: MagicMock) -> None:
+        response = {
+            "total": 2,
+            "issues": [
+                {
+                    "key": "VULN-0001",
+                    "fields": {
+                        "description": "**Title:** Wrong\n**Description:** Nope",
+                        "customfield_10100": {"value": "Low"},
+                        "customfield_10200": "LW-2026-9999",
+                    },
+                },
+                {
+                    "key": "VULN-0002",
+                    "fields": {
+                        "description": "**Title:** Correct\n**Description:** Yes",
+                        "customfield_10100": {"value": "High"},
+                        "customfield_10200": "LW-2026-0468",
+                    },
+                },
+            ],
+        }
+        mock_urlopen.side_effect = [
+            _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS),
+            _mock_urlopen_response(response),
+        ]
+
+        client = JiraClient(server="https://jira.example.com")
+        result = client.fetch_vulnerability("LW-2026-0468")
+
+        assert result is not None
+        assert result.key == "VULN-0002"
+        assert result.summary == "Correct"
+        assert result.severity == "High"
+
+    def test_invalid_lw_id_raises(self) -> None:
+        client = JiraClient()
+        with pytest.raises(ValueError, match="Invalid Lightwell identifier"):
+            client.fetch_vulnerability("CVE-2024-25710")
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_missing_severity_field_raises(self, mock_urlopen: MagicMock) -> None:
+        fields_without_severity = [
+            {"id": "summary", "name": "Summary", "custom": False},
+            {"id": "customfield_10200", "name": "CVE ID", "custom": True},
+        ]
+        mock_urlopen.return_value = _mock_urlopen_response(fields_without_severity)
+
+        client = JiraClient(server="https://jira.example.com")
+        with pytest.raises(ValueError, match="Severity"):
+            client.fetch_vulnerability("LW-2026-0468")
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_missing_cve_id_field_raises(self, mock_urlopen: MagicMock) -> None:
+        fields_without_cve = [
+            {"id": "summary", "name": "Summary", "custom": False},
+            {"id": "customfield_10100", "name": "Severity", "custom": True},
+        ]
+        mock_urlopen.return_value = _mock_urlopen_response(fields_without_cve)
+
+        client = JiraClient(server="https://jira.example.com")
+        with pytest.raises(ValueError, match="CVE ID"):
+            client.fetch_vulnerability("LW-2026-0468")
+
+    @patch("fath_cuan.jira.client.urllib.request.urlopen")
+    def test_severity_as_string_field(self, mock_urlopen: MagicMock) -> None:
+        response = {
+            "total": 1,
+            "issues": [
+                {
+                    "key": "VULN-1234",
+                    "fields": {
+                        "description": "**Title:** Test\n**Description:** Details",
+                        "customfield_10100": "Medium",
+                        "customfield_10200": "LW-2026-0468",
+                    },
+                }
+            ],
+        }
+        mock_urlopen.side_effect = [
+            _mock_urlopen_response(SAMPLE_FIELD_DEFINITIONS),
+            _mock_urlopen_response(response),
+        ]
+
+        client = JiraClient(server="https://jira.example.com")
+        result = client.fetch_vulnerability("LW-2026-0468")
+
+        assert result is not None
+        assert result.severity == "Medium"

@@ -9,13 +9,33 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from fath_cuan.jira.models import JiraIssue
+from fath_cuan.jira.models import JiraIssue, VulnerabilityData
 
 _DEFAULT_SERVER = "https://redhat.atlassian.net/"
 _API_PATH = "/rest/api/2"
 _LW_ID_PATTERN = re.compile(r"^LW-\d{4}-\d{4}$")
+_TITLE_PATTERN = re.compile(r"\*\*Title:\*\*\s*(.+)")
+_DESCRIPTION_PATTERN = re.compile(r"\*\*Description:\*\*\s*(.+?)(?=\n\*\*|\Z)", re.DOTALL)
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_description(text: str) -> tuple[str, str]:
+    """Extract summary and details from a JIRA description containing markdown fields."""
+    title_match = _TITLE_PATTERN.search(text)
+    summary = title_match.group(1).strip() if title_match else ""
+
+    desc_match = _DESCRIPTION_PATTERN.search(text)
+    details = desc_match.group(1).strip() if desc_match else ""
+
+    return summary, details
+
+
+def _extract_field_value(raw: object) -> str:
+    """Extract a string value from a JIRA field that may be a dict or scalar."""
+    if isinstance(raw, dict):
+        return str(raw.get("value", "") or raw.get("name", ""))
+    return str(raw) if raw else ""
 
 
 class JiraClient:
@@ -30,6 +50,7 @@ class JiraClient:
         self.server = server.rstrip("/")
         self._email = email
         self._token = token
+        self._field_map: dict[str, str] | None = None
 
     def _build_url(self, endpoint: str, params: dict[str, str] | None = None) -> str:
         url = f"{self.server}{_API_PATH}{endpoint}"
@@ -49,19 +70,31 @@ class JiraClient:
             headers["Authorization"] = f"Basic {credentials}"
         return headers
 
-    def get(self, endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        """Perform a GET request against the JIRA REST API."""
+    def _fetch(self, endpoint: str, params: dict[str, str] | None = None) -> Any:
+        """Perform a GET request and return the parsed JSON response."""
         url = self._build_url(endpoint, params)
         req = urllib.request.Request(url, headers=self._build_headers())
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read())  # type: ignore[no-any-return]
+                return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             logger.error("JIRA request failed: %s %s", e.code, e.reason)
             raise
         except (urllib.error.URLError, TimeoutError) as e:
             logger.error("JIRA request failed: %s", e)
             raise
+
+    def get(self, endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        """Perform a GET request against the JIRA REST API."""
+        return self._fetch(endpoint, params)  # type: ignore[no-any-return]
+
+    def _resolve_field_ids(self) -> dict[str, str]:
+        """Fetch JIRA field definitions and cache a name-to-id mapping."""
+        if self._field_map is not None:
+            return self._field_map
+        fields: list[dict[str, Any]] = self._fetch("/field")
+        self._field_map = {f.get("name", ""): f.get("id", "") for f in fields}
+        return self._field_map
 
     def search_vulnerability(self, lw_id: str) -> list[JiraIssue]:
         """Search for JIRA Vulnerability issues matching a Lightwell identifier.
@@ -78,3 +111,55 @@ class JiraClient:
         for raw_issue in data.get("issues", []):
             issues.append(JiraIssue.from_raw(raw_issue))
         return issues
+
+    def fetch_vulnerability(self, lw_id: str) -> VulnerabilityData | None:
+        """Fetch and parse vulnerability data from JIRA for a Lightwell identifier.
+
+        Resolves the custom field IDs for 'Severity' and 'CVE ID', searches
+        for matching Vulnerability tickets, validates the CVE ID field, and
+        parses the description for **Title:** and **Description:** sections.
+        """
+        if not _LW_ID_PATTERN.match(lw_id):
+            raise ValueError(
+                f"Invalid Lightwell identifier format: {lw_id!r}, expected LW-YYYY-XXXX"
+            )
+
+        field_map = self._resolve_field_ids()
+        severity_field = field_map.get("Severity", "")
+        cve_id_field = field_map.get("CVE ID", "")
+
+        if not severity_field or not cve_id_field:
+            missing = [
+                name
+                for name, fid in [("Severity", severity_field), ("CVE ID", cve_id_field)]
+                if not fid
+            ]
+            raise ValueError(f"Required JIRA fields not found: {', '.join(missing)}")
+
+        request_fields = f"description,{severity_field},{cve_id_field}"
+        jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
+        data = self.get("/search", {"jql": jql, "fields": request_fields})
+
+        for raw_issue in data.get("issues", []):
+            fields = raw_issue.get("fields", {})
+            if not isinstance(fields, dict):
+                continue
+
+            issue_cve_id = _extract_field_value(fields.get(cve_id_field))
+            if issue_cve_id != lw_id:
+                continue
+
+            description = str(fields.get("description", "") or "")
+            summary, details = _parse_description(description)
+
+            severity = _extract_field_value(fields.get(severity_field))
+
+            return VulnerabilityData(
+                key=str(raw_issue.get("key", "")),
+                summary=summary,
+                details=details,
+                severity=severity,
+                cve_id=issue_cve_id,
+            )
+
+        return None
