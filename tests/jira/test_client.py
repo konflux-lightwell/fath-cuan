@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fath_cuan.jira import JiraClient, JiraIssue
-from fath_cuan.jira.client import _extract_field_value, _parse_description
+from fath_cuan.jira.client import _extract_field_value, _parse_adf_description, _parse_description
 
 
 class TestJiraClientInit:
@@ -320,6 +320,111 @@ class TestParseDescription:
         assert details == "padded details"
 
 
+def _adf_paragraph(label: str, value: str) -> dict[str, object]:
+    """Build an ADF paragraph with a bold label and plain-text value."""
+    return {
+        "type": "paragraph",
+        "content": [
+            {"type": "text", "text": label, "marks": [{"type": "strong"}]},
+            {"type": "text", "text": f" {value}"},
+        ],
+    }
+
+
+def _adf_doc(*blocks: dict[str, object]) -> dict[str, object]:
+    """Build a minimal ADF document with the given blocks."""
+    return {"type": "doc", "version": 1, "content": list(blocks)}
+
+
+class TestParseAdfDescription:
+    def test_title_and_description(self) -> None:
+        adf = _adf_doc(
+            _adf_paragraph("Title:", "Buffer overflow in libfoo"),
+            _adf_paragraph("Description:", "A critical vulnerability."),
+        )
+        summary, details = _parse_adf_description(adf)
+        assert summary == "Buffer overflow in libfoo"
+        assert details == "A critical vulnerability."
+
+    def test_missing_title(self) -> None:
+        adf = _adf_doc(_adf_paragraph("Description:", "Only details."))
+        summary, details = _parse_adf_description(adf)
+        assert summary == ""
+        assert details == "Only details."
+
+    def test_missing_description(self) -> None:
+        adf = _adf_doc(_adf_paragraph("Title:", "Only a title"))
+        summary, details = _parse_adf_description(adf)
+        assert summary == "Only a title"
+        assert details == ""
+
+    def test_empty_doc(self) -> None:
+        adf: dict[str, object] = {"type": "doc", "version": 1, "content": []}
+        summary, details = _parse_adf_description(adf)
+        assert summary == ""
+        assert details == ""
+
+    def test_ignores_non_bold_labels(self) -> None:
+        adf: dict[str, object] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Title:"},
+                        {"type": "text", "text": " Not bold"},
+                    ],
+                }
+            ],
+        }
+        summary, details = _parse_adf_description(adf)
+        assert summary == ""
+        assert details == ""
+
+    def test_ignores_non_paragraph_blocks(self) -> None:
+        adf: dict[str, object] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "rule"},
+                {"type": "heading", "attrs": {"level": 3}, "content": []},
+                _adf_paragraph("Title:", "Found it"),
+            ],
+        }
+        summary, _details = _parse_adf_description(adf)
+        assert summary == "Found it"
+
+    def test_extra_fields_ignored(self) -> None:
+        adf = _adf_doc(
+            _adf_paragraph("Title:", "The title"),
+            _adf_paragraph("Component:", "libfoo"),
+            _adf_paragraph("Description:", "The details"),
+            _adf_paragraph("Version:", "1.0"),
+        )
+        summary, details = _parse_adf_description(adf)
+        assert summary == "The title"
+        assert details == "The details"
+
+    def test_multi_text_node_value(self) -> None:
+        adf: dict[str, object] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Title:", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": " Part one"},
+                        {"type": "text", "text": " part two"},
+                    ],
+                }
+            ],
+        }
+        summary, _details = _parse_adf_description(adf)
+        assert summary == "Part one part two"
+
+
 class TestExtractFieldValue:
     def test_dict_with_value(self) -> None:
         assert _extract_field_value({"value": "Critical", "id": "1"}) == "Critical"
@@ -366,10 +471,13 @@ SAMPLE_VULN_SEARCH_RESPONSE = {
         {
             "key": "VULN-1234",
             "fields": {
-                "description": (
-                    "**Title:** Buffer overflow in libfoo\n"
-                    "**Description:** A buffer overflow vulnerability exists in libfoo "
-                    "allowing remote code execution."
+                "description": _adf_doc(
+                    _adf_paragraph("Title:", "Buffer overflow in libfoo"),
+                    _adf_paragraph(
+                        "Description:",
+                        "A buffer overflow vulnerability exists in libfoo "
+                        "allowing remote code execution.",
+                    ),
                 ),
                 "customfield_10100": {"value": "Critical"},
                 "customfield_10200": "LW-2026-0468",
@@ -428,7 +536,10 @@ class TestFetchVulnerability:
                 {
                     "key": "VULN-1234",
                     "fields": {
-                        "description": "**Title:** Something\n**Description:** Details",
+                        "description": _adf_doc(
+                            _adf_paragraph("Title:", "Something"),
+                            _adf_paragraph("Description:", "Details"),
+                        ),
                         "customfield_10100": {"value": "High"},
                         "customfield_10200": "LW-2026-9999",
                     },
@@ -465,7 +576,10 @@ class TestFetchVulnerability:
                 {
                     "key": "VULN-0001",
                     "fields": {
-                        "description": "**Title:** Wrong\n**Description:** Nope",
+                        "description": _adf_doc(
+                            _adf_paragraph("Title:", "Wrong"),
+                            _adf_paragraph("Description:", "Nope"),
+                        ),
                         "customfield_10100": {"value": "Low"},
                         "customfield_10200": "LW-2026-9999",
                     },
@@ -473,7 +587,10 @@ class TestFetchVulnerability:
                 {
                     "key": "VULN-0002",
                     "fields": {
-                        "description": "**Title:** Correct\n**Description:** Yes",
+                        "description": _adf_doc(
+                            _adf_paragraph("Title:", "Correct"),
+                            _adf_paragraph("Description:", "Yes"),
+                        ),
                         "customfield_10100": {"value": "High"},
                         "customfield_10200": "LW-2026-0468",
                     },
@@ -530,7 +647,10 @@ class TestFetchVulnerability:
                 {
                     "key": "VULN-1234",
                     "fields": {
-                        "description": "**Title:** Test\n**Description:** Details",
+                        "description": _adf_doc(
+                            _adf_paragraph("Title:", "Test"),
+                            _adf_paragraph("Description:", "Details"),
+                        ),
                         "customfield_10100": "Medium",
                         "customfield_10200": "LW-2026-0468",
                     },

@@ -31,6 +31,40 @@ def _parse_description(text: str) -> tuple[str, str]:
     return summary, details
 
 
+def _parse_adf_description(adf: dict[str, Any]) -> tuple[str, str]:
+    """Extract summary and details from a JIRA ADF (Atlassian Document Format) description.
+
+    Looks for paragraphs where the first text node is bold "Title:" or
+    "Description:", then concatenates the remaining text nodes as the value.
+    """
+    summary = ""
+    details = ""
+
+    for block in adf.get("content", []):
+        if block.get("type") != "paragraph":
+            continue
+        content = block.get("content", [])
+        if not content:
+            continue
+        first = content[0]
+        if first.get("type") != "text":
+            continue
+        marks = first.get("marks", [])
+        is_bold = any(m.get("type") == "strong" for m in marks)
+        if not is_bold:
+            continue
+
+        label = first.get("text", "").strip()
+        value = "".join(node.get("text", "") for node in content[1:]).strip()
+
+        if label == "Title:":
+            summary = value
+        elif label == "Description:":
+            details = value
+
+    return summary, details
+
+
 def _extract_field_value(raw: object) -> str:
     """Extract a string value from a JIRA field that may be a dict or scalar."""
     if isinstance(raw, dict):
@@ -178,9 +212,12 @@ class JiraClient:
                 logger.debug("Issue %s does not match %s", issue_cve_id, lw_id)
                 continue
 
-            description = str(fields.get("description", "") or "")
-            logger.debug("Description: %s", description)
-            summary, details = _parse_description(description)
+            description_raw = fields.get("description")
+            logger.debug("Description: %s", description_raw)
+            if isinstance(description_raw, dict):
+                summary, details = _parse_adf_description(description_raw)
+            else:
+                summary, details = _parse_description(str(description_raw or ""))
             logger.debug("Summary: %s", summary)
             logger.debug("Details: %s", details)
 
