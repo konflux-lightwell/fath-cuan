@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
 from typing import Any
 
+from fath_cuan.jira.client import JiraClient
+from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.input import InputDocument
 from fath_cuan.models.osv import (
     AffectedEntry,
@@ -77,10 +80,33 @@ def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
             if vulns:
                 return vulns[0].get("cve", {})  # type: ignore[no-any-return]
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
-        import logging
-
         logging.warning("NVD fetch failed for %s: %s", cve_id, e)
     return None
+
+
+def _fetch_jira(
+    lw_id: str, client: JiraClient | None = None
+) -> VulnerabilityData | None:
+    """Fetch vulnerability data from JIRA for a Lightwell identifier."""
+    jira = client or JiraClient()
+    try:
+        return jira.fetch_vulnerability(lw_id)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as e:
+        logging.warning("JIRA fetch failed for %s: %s", lw_id, e)
+        return None
+
+
+def _jira_severity(severity_value: str) -> list[Severity]:
+    """Convert a JIRA severity value to OSV Severity entries."""
+    if not severity_value:
+        return []
+    if severity_value.startswith("CVSS:4"):
+        return [Severity(type="CVSS_V4", score=severity_value)]
+    if severity_value.startswith("CVSS:3"):
+        return [Severity(type="CVSS_V3", score=severity_value)]
+    if severity_value.startswith("CVSS:2"):
+        return [Severity(type="CVSS_V2", score=severity_value)]
+    return []
 
 
 def _extract_severity(upstream: dict[str, Any], nvd: dict[str, Any] | None) -> list[Severity]:
@@ -231,6 +257,7 @@ def convert(
     doc: InputDocument,
     embargo: bool = False,
     osidb_client: OsidbClient | None = None,
+    jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
 ) -> list[OSVDocument]:
     """Convert a PNC gav-index into one OSV record per CVE.
@@ -239,6 +266,7 @@ def convert(
     1. OSIDB (structured vulnerability metadata, when available)
     2. Upstream OSV (osv.dev)
     3. NVD (fallback for missing summary/severity)
+    4. JIRA (fallback for Lightwell identifiers)
 
     The Pulp OSV repo is currently protected by a content guard and is
     not public. All novel findings are embargoed by default within the
@@ -375,6 +403,16 @@ def convert(
             if not _is_useful_summary(summary)
             else (summary, details)
         )
+
+        if not osidb_meta and cve_id.startswith("LW-"):
+            jira_data = _fetch_jira(cve_id, jira_client)
+            if jira_data:
+                if not _is_useful_summary(summary):
+                    summary = jira_data.summary
+                if not details:
+                    details = jira_data.details
+                if not severity:
+                    severity = _jira_severity(jira_data.severity)
 
         if not references and cve_id.startswith("CVE-"):
             references.append(
