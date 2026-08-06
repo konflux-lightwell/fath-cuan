@@ -3,13 +3,17 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
+from fath_cuan.jira.models import JiraIssue
+
 _DEFAULT_SERVER = "https://redhat.atlassian.net/"
 _API_PATH = "/rest/api/2"
+_LW_ID_PATTERN = re.compile(r"^LW-\d{4}-\d{4}$")
 
 logger = logging.getLogger(__name__)
 
@@ -58,3 +62,19 @@ class JiraClient:
         except (urllib.error.URLError, TimeoutError) as e:
             logger.error("JIRA request failed: %s", e)
             raise
+
+    def search_vulnerability(self, lw_id: str) -> list[JiraIssue]:
+        """Search for JIRA Vulnerability issues matching a Lightwell identifier.
+
+        Uses JQL: textfields ~ "<lw_id>" AND type = Vulnerability
+        """
+        if not _LW_ID_PATTERN.match(lw_id):
+            raise ValueError(
+                f"Invalid Lightwell identifier format: {lw_id!r}, expected LW-YYYY-XXXX"
+            )
+        jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
+        data = self.get("/search", {"jql": jql, "fields": "summary,status,issuetype"})
+        issues: list[JiraIssue] = []
+        for raw_issue in data.get("issues", []):
+            issues.append(JiraIssue.from_raw(raw_issue))
+        return issues
