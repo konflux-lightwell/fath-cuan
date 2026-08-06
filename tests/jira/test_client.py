@@ -51,7 +51,12 @@ class TestBuildHeaders:
         headers = client._build_headers()
         assert headers["Authorization"].startswith("Basic ")
 
-    def test_partial_auth_ignored(self) -> None:
+    def test_token_only_uses_bearer(self) -> None:
+        client = JiraClient(token="secret-token")
+        headers = client._build_headers()
+        assert headers["Authorization"] == "Bearer secret-token"
+
+    def test_email_only_no_auth(self) -> None:
         client = JiraClient(email="user@example.com")
         headers = client._build_headers()
         assert "Authorization" not in headers

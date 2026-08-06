@@ -68,6 +68,12 @@ class JiraClient:
                 f"{self._email}:{self._token}".encode()
             ).decode()
             headers["Authorization"] = f"Basic {credentials}"
+            logger.debug("Using Basic auth for %s", self._email)
+        elif self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+            logger.debug("Using Bearer auth (no email configured)")
+        else:
+            logger.debug("No authentication configured")
         return headers
 
     def _fetch(self, endpoint: str, params: dict[str, str] | None = None) -> Any:
