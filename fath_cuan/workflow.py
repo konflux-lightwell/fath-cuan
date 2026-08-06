@@ -4,6 +4,7 @@ from typing import Any
 
 from fath_cuan.converters import osv as osv_converter
 from fath_cuan.converters import vex as vex_converter
+from fath_cuan.jira.client import JiraClient
 from fath_cuan.models.input import InputDocument
 from fath_cuan.osidb import OsidbClient
 
@@ -12,6 +13,7 @@ def process_osv(
     input_json: dict[str, Any],
     embargo: bool = False,
     osidb_client: OsidbClient | None = None,
+    jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert input JSON into a list of OSV records (one per CVE)."""
@@ -20,6 +22,7 @@ def process_osv(
         doc,
         embargo=embargo,
         osidb_client=osidb_client,
+        jira_client=jira_client,
         redact_embargoed=redact_embargoed,
     )
     return [d.model_dump(exclude_none=True) for d in osv_docs]
