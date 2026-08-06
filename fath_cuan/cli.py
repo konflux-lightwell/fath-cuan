@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -27,10 +28,17 @@ def _build_jira_client() -> JiraClient | None:
     return JiraClient(**kwargs)
 
 
+_LOG_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
+
+
 @click.group()
 @click.version_option(version=fath_cuan.__version__)
-def main() -> None:
+@click.option("-v", "--verbose", count=True, help="Increase verbosity (repeat for more: -vvv).")
+def main(verbose: int) -> None:
     """fath-cuan: Convert JSON into OSV and VEX files."""
+    level = _LOG_LEVELS[min(verbose, len(_LOG_LEVELS) - 1)]
+    logging.basicConfig(format="%(levelname)s: %(name)s: %(message)s")
+    logging.root.setLevel(level)
 
 
 @main.command()

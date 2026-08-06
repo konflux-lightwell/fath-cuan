@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -110,3 +111,25 @@ class TestBuildJiraClient:
     def test_empty_token_returns_none(self) -> None:
         with patch.dict(os.environ, {"JIRA_TOKEN": ""}, clear=True):
             assert _build_jira_client() is None
+
+
+class TestVerbosity:
+    def _invoke_with_verbosity(self, flags: list[str]) -> None:
+        runner = CliRunner()
+        runner.invoke(main, [*flags, "process", "--help"])
+
+    def test_default_is_warning(self) -> None:
+        self._invoke_with_verbosity([])
+        assert logging.root.level == logging.WARNING
+
+    def test_v_sets_info(self) -> None:
+        self._invoke_with_verbosity(["-v"])
+        assert logging.root.level == logging.INFO
+
+    def test_vv_sets_debug(self) -> None:
+        self._invoke_with_verbosity(["-vv"])
+        assert logging.root.level == logging.DEBUG
+
+    def test_vvvvv_stays_debug(self) -> None:
+        self._invoke_with_verbosity(["-vvvvv"])
+        assert logging.root.level == logging.DEBUG
