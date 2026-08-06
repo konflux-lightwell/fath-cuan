@@ -72,10 +72,13 @@ class JiraClient:
 
     def _fetch(self, endpoint: str, params: dict[str, str] | None = None) -> Any:
         """Perform a GET request and return the parsed JSON response."""
+        logger.debug("Fetching %s with params %s", endpoint, params)
         url = self._build_url(endpoint, params)
         req = urllib.request.Request(url, headers=self._build_headers())
         try:
+            logger.debug("Sending request to %s", url)
             with urllib.request.urlopen(req, timeout=30) as resp:
+                logger.debug("Received response from %s", url)
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             logger.error("JIRA request failed: %s %s", e.code, e.reason)
@@ -86,13 +89,17 @@ class JiraClient:
 
     def get(self, endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         """Perform a GET request against the JIRA REST API."""
+        logger.debug("Getting %s with params %s", endpoint, params)
         return self._fetch(endpoint, params)  # type: ignore[no-any-return]
 
     def _resolve_field_ids(self) -> dict[str, str]:
         """Fetch JIRA field definitions and cache a name-to-id mapping."""
         if self._field_map is not None:
+            logger.debug("Using cached field map")
             return self._field_map
+        logger.debug("Fetching field definitions")
         fields: list[dict[str, Any]] = self._fetch("/field")
+        logger.debug("Received %d field definitions", len(fields))
         self._field_map = {f.get("name", ""): f.get("id", "") for f in fields}
         return self._field_map
 
@@ -101,15 +108,20 @@ class JiraClient:
 
         Uses JQL: textfields ~ "<lw_id>" AND type = Vulnerability
         """
+        logger.debug("Searching for vulnerability %s", lw_id)
         if not _LW_ID_PATTERN.match(lw_id):
+            logger.error("Invalid Lightwell identifier format: %s, expected LW-YYYY-XXXX", lw_id)
             raise ValueError(
                 f"Invalid Lightwell identifier format: {lw_id!r}, expected LW-YYYY-XXXX"
             )
         jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
         data = self.get("/search", {"jql": jql, "fields": "summary,status,issuetype"})
         issues: list[JiraIssue] = []
+        logger.debug("Received %d issues", len(data.get("issues", [])))
         for raw_issue in data.get("issues", []):
+            logger.debug("Processing issue %s", raw_issue.get("key", ""))
             issues.append(JiraIssue.from_raw(raw_issue))
+        logger.debug("Found %d issues", len(issues))
         return issues
 
     def fetch_vulnerability(self, lw_id: str) -> VulnerabilityData | None:
@@ -119,41 +131,55 @@ class JiraClient:
         for matching Vulnerability tickets, validates the CVE ID field, and
         parses the description for **Title:** and **Description:** sections.
         """
+        logger.debug("Fetching vulnerability %s", lw_id)
         if not _LW_ID_PATTERN.match(lw_id):
             raise ValueError(
                 f"Invalid Lightwell identifier format: {lw_id!r}, expected LW-YYYY-XXXX"
             )
 
         field_map = self._resolve_field_ids()
+        logger.debug("Resolved field map: %s", field_map)
         severity_field = field_map.get("Severity", "")
         cve_id_field = field_map.get("CVE ID", "")
 
         if not severity_field or not cve_id_field:
+            logger.error(
+                "Required JIRA fields not found: Severity=%s, CVE ID=%s",
+                severity_field, cve_id_field,
+            )
             missing = [
                 name
                 for name, fid in [("Severity", severity_field), ("CVE ID", cve_id_field)]
                 if not fid
             ]
+            logger.error("Required JIRA fields not found: %s", ', '.join(missing))
             raise ValueError(f"Required JIRA fields not found: {', '.join(missing)}")
 
         request_fields = f"description,{severity_field},{cve_id_field}"
         jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
+        logger.debug("JQL: %s", jql)
         data = self.get("/search", {"jql": jql, "fields": request_fields})
+        logger.debug("Received %d issues", len(data.get("issues", [])))
 
         for raw_issue in data.get("issues", []):
+            logger.debug("Processing issue %s", raw_issue.get("key", ""))
             fields = raw_issue.get("fields", {})
             if not isinstance(fields, dict):
                 continue
 
             issue_cve_id = _extract_field_value(fields.get(cve_id_field))
             if issue_cve_id != lw_id:
+                logger.debug("Issue %s does not match %s", issue_cve_id, lw_id)
                 continue
 
             description = str(fields.get("description", "") or "")
+            logger.debug("Description: %s", description)
             summary, details = _parse_description(description)
+            logger.debug("Summary: %s", summary)
+            logger.debug("Details: %s", details)
 
             severity = _extract_field_value(fields.get(severity_field))
-
+            logger.debug("Severity: %s", severity)
             return VulnerabilityData(
                 key=str(raw_issue.get("key", "")),
                 summary=summary,

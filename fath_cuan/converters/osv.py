@@ -28,6 +28,8 @@ _OSV_ID_PREFIX = "x_RHLW-"
 _OSV_API = "https://api.osv.dev/v1/vulns"
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
+logger = logging.getLogger(__name__)
+
 _ADVISORY_PATTERNS = (
     "/advisories/",
     "/advisory/",
@@ -61,26 +63,32 @@ def _base_version(version: str) -> str:
 def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
     """Fetch upstream OSV record for a CVE from osv.dev."""
     url = f"{_OSV_API}/{cve_id}"
+    logger.debug("Fetching upstream OSV for %s", cve_id)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.debug("Received upstream OSV response for %s", cve_id)
             return json.loads(resp.read())  # type: ignore[no-any-return]
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        logger.debug("No upstream OSV data found for %s", cve_id)
         return None
 
 
 def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
     """Fetch CVE data from NVD as a fallback for missing summary/severity."""
     url = f"{_NVD_API}?cveId={cve_id}"
+    logger.debug("Fetching NVD data for %s", cve_id)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
             vulns = data.get("vulnerabilities", [])
             if vulns:
+                logger.debug("Received NVD data for %s", cve_id)
                 return vulns[0].get("cve", {})  # type: ignore[no-any-return]
+            logger.debug("No NVD vulnerabilities found for %s", cve_id)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
-        logging.warning("NVD fetch failed for %s: %s", cve_id, e)
+        logger.warning("NVD fetch failed for %s: %s", cve_id, e)
     return None
 
 
@@ -89,10 +97,16 @@ def _fetch_jira(
 ) -> VulnerabilityData | None:
     """Fetch vulnerability data from JIRA for a Lightwell identifier."""
     jira = client or JiraClient()
+    logger.debug("Fetching JIRA vulnerability data for %s", lw_id)
     try:
-        return jira.fetch_vulnerability(lw_id)
+        result = jira.fetch_vulnerability(lw_id)
+        if result:
+            logger.debug("Found JIRA ticket %s for %s", result.key, lw_id)
+        else:
+            logger.debug("No matching JIRA ticket found for %s", lw_id)
+        return result
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as e:
-        logging.warning("JIRA fetch failed for %s: %s", lw_id, e)
+        logger.warning("JIRA fetch failed for %s: %s", lw_id, e)
         return None
 
 
@@ -278,6 +292,7 @@ def convert(
     base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
     coordinates = f"{group_id}:{artifact_id}"
     purl = f"pkg:maven/{group_id}/{artifact_id}@{version}"
+    logger.debug("Converting %s (%s) with %d vulns", coordinates, version, len(doc.vulns))
 
     published = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
@@ -287,12 +302,14 @@ def convert(
 
     for cve_id in doc.vulns:
         if cve_id in seen_cves:
+            logger.debug("Skipping duplicate %s", cve_id)
             continue
         seen_cves.add(cve_id)
 
         osv_id = f"{_OSV_ID_PREFIX}{cve_id}-{base_ver}"
 
         if embargo:
+            logger.debug("Generating embargo stub for %s", cve_id)
             record = OSVDocument(
                 id=osv_id,
                 published=published,
@@ -390,6 +407,7 @@ def convert(
                 details = upstream.get("details", "")
 
         if not _is_useful_summary(summary) or not severity:
+            logger.debug("Missing summary/severity, falling back to NVD for %s", cve_id)
             nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
 
         if not severity:
@@ -460,4 +478,5 @@ def convert(
         )
         records.append(record)
 
+    logger.info("Generated %d OSV records", len(records))
     return records
