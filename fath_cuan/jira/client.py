@@ -12,7 +12,7 @@ from typing import Any
 from fath_cuan.jira.models import JiraIssue, VulnerabilityData
 
 _DEFAULT_SERVER = "https://redhat.atlassian.net/"
-_API_PATH = "/rest/api/2"
+_API_PATH = "/rest/api/3"
 _LW_ID_PATTERN = re.compile(r"^LW-\d{4}-\d{4}$")
 _TITLE_PATTERN = re.compile(r"\*\*Title:\*\*\s*(.+)")
 _DESCRIPTION_PATTERN = re.compile(r"\*\*Description:\*\*\s*(.+?)(?=\n\*\*|\Z)", re.DOTALL)
@@ -39,7 +39,7 @@ def _extract_field_value(raw: object) -> str:
 
 
 class JiraClient:
-    """Client for communicating with a JIRA instance via REST API v2."""
+    """Client for communicating with a JIRA instance via REST API v3."""
 
     def __init__(
         self,
@@ -115,7 +115,7 @@ class JiraClient:
                 f"Invalid Lightwell identifier format: {lw_id!r}, expected LW-YYYY-XXXX"
             )
         jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
-        data = self.get("/search", {"jql": jql, "fields": "summary,status,issuetype"})
+        data = self.get("/search/jql", {"jql": jql, "fields": "summary,status,issuetype"})
         issues: list[JiraIssue] = []
         logger.debug("Received %d issues", len(data.get("issues", [])))
         for raw_issue in data.get("issues", []):
@@ -158,7 +158,7 @@ class JiraClient:
         request_fields = f"description,{severity_field},{cve_id_field}"
         jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
         logger.debug("JQL: %s", jql)
-        data = self.get("/search", {"jql": jql, "fields": request_fields})
+        data = self.get("/search/jql", {"jql": jql, "fields": request_fields})
         logger.debug("Received %d issues", len(data.get("issues", [])))
 
         for raw_issue in data.get("issues", []):

@@ -28,12 +28,12 @@ class TestBuildUrl:
     def test_endpoint_only(self) -> None:
         client = JiraClient(server="https://jira.example.com")
         url = client._build_url("/search")
-        assert url == "https://jira.example.com/rest/api/2/search"
+        assert url == "https://jira.example.com/rest/api/3/search"
 
     def test_with_params(self) -> None:
         client = JiraClient(server="https://jira.example.com")
         url = client._build_url("/search", {"jql": "type = Bug", "maxResults": "10"})
-        assert url.startswith("https://jira.example.com/rest/api/2/search?")
+        assert url.startswith("https://jira.example.com/rest/api/3/search?")
         assert "jql=type+%3D+Bug" in url or "jql=type+%3D+Bug" in url
         assert "maxResults=10" in url
 
@@ -73,12 +73,12 @@ class TestGet:
         assert result == response_data
         mock_urlopen.assert_called_once()
         req = mock_urlopen.call_args[0][0]
-        assert "jira.example.com/rest/api/2/search" in req.full_url
+        assert "jira.example.com/rest/api/3/search" in req.full_url
 
     @patch("fath_cuan.jira.client.urllib.request.urlopen")
     def test_http_error_raises(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = urllib.error.HTTPError(
-            url="https://jira.example.com/rest/api/2/search",
+            url="https://jira.example.com/rest/api/3/search",
             code=401,
             msg="Unauthorized",
             hdrs=None,  # type: ignore[arg-type]
