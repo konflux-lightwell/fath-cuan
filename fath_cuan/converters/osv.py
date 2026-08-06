@@ -357,6 +357,7 @@ def convert(
                 credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
+                        source="novel-pipeline",
                         backport_base_version=base_ver,
                         embargo_status="pre-disclosure",
                     )
@@ -443,6 +444,9 @@ def convert(
         introduced = _extract_introduced(upstream, coordinates) if upstream else "0"
 
         source = "novel-pipeline" if cve_id.startswith("LW-") else "pnc-build"
+
+        if cve_id.startswith("LW-") and "lw_id" not in lw_meta_extra:
+            lw_meta_extra["lw_id"] = cve_id
 
         affected = AffectedEntry(
             package=Package(name=coordinates, purl=purl),

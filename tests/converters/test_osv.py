@@ -105,6 +105,7 @@ def test_base_version_stripped_in_metadata(mock_osv: object, mock_nvd: object) -
     lw = results[0].database_specific.lightwell
     assert lw.backport_base_version == "1.0.0"
     assert lw.source == "pnc-build"
+    assert lw.lw_id is None
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -648,6 +649,17 @@ def test_lw_id_affected_package(mock_jira: object) -> None:
     events = results[0].affected[0].ranges[0].events
     assert events[0].introduced == "0"
     assert events[1].fixed == "1.0.0.rhlw-00001"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_database_specific(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    lw = results[0].database_specific.lightwell
+    assert lw.source == "novel-pipeline"
+    assert lw.backport_base_version == "1.0.0"
+    assert lw.lw_id == "LW-2026-0468"
 
 
 @patch("fath_cuan.converters.osv._fetch_jira")
