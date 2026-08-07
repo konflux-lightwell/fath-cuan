@@ -56,8 +56,7 @@ SAMPLE_FLAW_WITH_CVE = {
     "cvss_scores": [],
     "cve_description": "",
     "comment_zero": (
-        "## Vulnerability Details\n\n## Description\n\n"
-        "The class-not-found handler recurses."
+        "## Vulnerability Details\n\n## Description\n\nThe class-not-found handler recurses."
     ),
     "references": [],
     "affects": [],

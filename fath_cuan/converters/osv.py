@@ -175,10 +175,20 @@ def _extract_aliases(upstream: dict[str, Any], cve_id: str) -> list[str]:
     return aliases
 
 
-_USELESS_SUMMARIES = frozenset({
-    "fixed", "fixed.", "update", "update.", "patch", "patch.",
-    "security fix", "security fix.", "bug fix", "bug fix.",
-})
+_USELESS_SUMMARIES = frozenset(
+    {
+        "fixed",
+        "fixed.",
+        "update",
+        "update.",
+        "patch",
+        "patch.",
+        "security fix",
+        "security fix.",
+        "bug fix",
+        "bug fix.",
+    }
+)
 
 
 def _is_useful_summary(text: str) -> bool:
@@ -323,10 +333,14 @@ def convert(
         if not severity:
             severity = _extract_severity(upstream or {}, nvd)
 
-        summary, details = _extract_summary_details(
-            upstream if not osidb_meta else None,
-            nvd,
-        ) if not _is_useful_summary(summary) else (summary, details)
+        summary, details = (
+            _extract_summary_details(
+                upstream if not osidb_meta else None,
+                nvd,
+            )
+            if not _is_useful_summary(summary)
+            else (summary, details)
+        )
 
         if not references and cve_id.startswith("CVE-"):
             references.append(

@@ -47,11 +47,14 @@ def _obtain_token(base_url: str) -> str | None:
 
         result = subprocess.run(
             ["curl", "-s", "--negotiate", "-u", ":", url],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
-            return data.get("access")
+            token: str | None = data.get("access")
+            return token
     except Exception as e:
         log.warning("OSIDB token acquisition failed: %s", e)
     return None
@@ -85,18 +88,22 @@ class OsidbClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
+                result: dict[str, Any] = json.loads(resp.read())
+                return result
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
             log.warning("OSIDB request failed (%s): %s", path, e)
             return None
 
     def get_flaw(self, vuln_id: str) -> dict[str, Any] | None:
         """Fetch a single flaw by vulnerability_id (LW-YYYY-NNNN) or CVE ID."""
-        data = self._get(_FLAWS_PATH, {
-            "search": vuln_id,
-            "include_fields": _FLAW_FIELDS,
-            "limit": "5",
-        })
+        data = self._get(
+            _FLAWS_PATH,
+            {
+                "search": vuln_id,
+                "include_fields": _FLAW_FIELDS,
+                "limit": "5",
+            },
+        )
         if not data:
             return None
 
@@ -105,13 +112,13 @@ class OsidbClient:
             return None
 
         if len(results) == 1:
-            return results[0]
+            return results[0]  # type: ignore[no-any-return]
 
         for r in results:
             if r.get("vulnerability_id") == vuln_id or r.get("cve_id") == vuln_id:
-                return r
+                return r  # type: ignore[no-any-return]
 
-        return results[0]
+        return results[0]  # type: ignore[no-any-return]
 
 
 def extract_osidb_metadata(flaw: dict[str, Any]) -> dict[str, Any]:

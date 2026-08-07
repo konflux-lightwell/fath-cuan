@@ -35,7 +35,8 @@ def main() -> None:
 @click.option("--embargo", is_flag=True, help="Generate pre-disclosure embargo stubs.")
 @click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
 @click.option(
-    "--osidb-url", default=None,
+    "--osidb-url",
+    default=None,
     help="OSIDB base URL (default: env OSIDB_URL or production).",
 )
 def process(

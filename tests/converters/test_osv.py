@@ -438,30 +438,36 @@ def test_introduced_defaults_to_zero_without_upstream(mock_osv: object, mock_nvd
 
 OSIDB_FLAW_RESPONSE = {
     "count": 1,
-    "results": [{
-        "uuid": "33501a2f-eb62-4aaa-9815-36c9832afcee",
-        "vulnerability_id": "LW-2026-0468",
-        "cve_id": None,
-        "title": "Unclosed '[' in LDAP URL host spins thread forever",
-        "impact": "CRITICAL",
-        "source": "CUSTOMER",
-        "cwe_id": "CWE-835",
-        "cvss_scores": [{
-            "cvss_version": "V3",
-            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
-            "score": 7.5,
-        }],
-        "cve_description": "parseHost dispatches any host beginning with '['.",
-        "comment_zero": "",
-        "references": [{
-            "url": "https://gitlab.cee.redhat.com/duffy/bananach/-/work_items/468",
-            "type": "SOURCE",
-        }],
-        "affects": [],
-        "components": ["api-ldap-model"],
-        "embargoed": False,
-        "visibility": "PUBLIC",
-    }],
+    "results": [
+        {
+            "uuid": "33501a2f-eb62-4aaa-9815-36c9832afcee",
+            "vulnerability_id": "LW-2026-0468",
+            "cve_id": None,
+            "title": "Unclosed '[' in LDAP URL host spins thread forever",
+            "impact": "CRITICAL",
+            "source": "CUSTOMER",
+            "cwe_id": "CWE-835",
+            "cvss_scores": [
+                {
+                    "cvss_version": "V3",
+                    "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                    "score": 7.5,
+                }
+            ],
+            "cve_description": "parseHost dispatches any host beginning with '['.",
+            "comment_zero": "",
+            "references": [
+                {
+                    "url": "https://gitlab.cee.redhat.com/duffy/bananach/-/work_items/468",
+                    "type": "SOURCE",
+                }
+            ],
+            "affects": [],
+            "components": ["api-ldap-model"],
+            "embargoed": False,
+            "visibility": "PUBLIC",
+        }
+    ],
 }
 
 
