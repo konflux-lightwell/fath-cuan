@@ -34,7 +34,7 @@ def process_osv(
     return [d.model_dump(exclude_none=True) for d in osv_docs]
 
 
-def process_vex(input_json: dict[str, Any]) -> dict[str, Any]:  
+def process_vex(input_json: dict[str, Any]) -> dict[str, Any]:
     logger.info("Processing VEX records for %s", input_json)
     doc = InputDocument.from_dict(input_json)
     logger.info("Converting to VEX record")

@@ -98,9 +98,7 @@ class JiraClient:
             "Content-Type": "application/json",
         }
         if self._email and self._token:
-            credentials = base64.b64encode(
-                f"{self._email}:{self._token}".encode()
-            ).decode()
+            credentials = base64.b64encode(f"{self._email}:{self._token}".encode()).decode()
             headers["Authorization"] = f"Basic {credentials}"
             logger.debug("Using Basic auth for %s", self._email)
         elif self._token:
@@ -185,14 +183,15 @@ class JiraClient:
         if not severity_field or not cve_id_field:
             logger.error(
                 "Required JIRA fields not found: Severity=%s, CVE ID=%s",
-                severity_field, cve_id_field,
+                severity_field,
+                cve_id_field,
             )
             missing = [
                 name
                 for name, fid in [("Severity", severity_field), ("CVE ID", cve_id_field)]
                 if not fid
             ]
-            logger.error("Required JIRA fields not found: %s", ', '.join(missing))
+            logger.error("Required JIRA fields not found: %s", ", ".join(missing))
             raise ValueError(f"Required JIRA fields not found: {', '.join(missing)}")
 
         request_fields = f"description,{severity_field},{cve_id_field}"

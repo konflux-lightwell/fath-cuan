@@ -197,9 +197,7 @@ class TestSearchVulnerability:
     @patch("fath_cuan.jira.client.urllib.request.urlopen")
     def test_multiple_results(self, mock_urlopen: MagicMock) -> None:
         mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps(
-            SAMPLE_JIRA_MULTI_RESULT_RESPONSE
-        ).encode()
+        mock_response.read.return_value = json.dumps(SAMPLE_JIRA_MULTI_RESULT_RESPONSE).encode()
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_response
@@ -281,11 +279,7 @@ class TestParseDescription:
         assert details == expected
 
     def test_description_stops_at_next_field(self) -> None:
-        text = (
-            "**Title:** Buffer overflow\n"
-            "**Description:** Some details here.\n"
-            "**Impact:** High"
-        )
+        text = "**Title:** Buffer overflow\n**Description:** Some details here.\n**Impact:** High"
         summary, details = _parse_description(text)
         assert summary == "Buffer overflow"
         assert details == "Some details here."

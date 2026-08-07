@@ -46,7 +46,6 @@ class LightwellMeta(BaseModel):
     lw_id: str | None = None
     embargo_status: str | None = None
     embargo_expires: str | None = None
-    lw_id: str | None = None
     vulnerability_class: str | None = None
 
 

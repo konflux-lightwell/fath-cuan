@@ -544,6 +544,8 @@ def test_embargoed_flaw_redacted_when_opted_in(mock_osv: object, mock_nvd: objec
     assert r.aliases == []
     assert r.summary == ""
     assert r.severity == []
+
+
 # --- LW- identifier tests ---
 
 
@@ -676,9 +678,7 @@ def test_lw_id_jira_returns_none(mock_jira: object) -> None:
 @patch("fath_cuan.converters.osv._fetch_jira")
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_mixed_cve_and_lw_ids(
-    mock_osv: object, mock_nvd: object, mock_jira: object
-) -> None:
+def test_mixed_cve_and_lw_ids(mock_osv: object, mock_nvd: object, mock_jira: object) -> None:
     mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
     doc = InputDocument.from_dict(SAMPLE_MIXED_VULN_DATA)
     results = convert(doc)
@@ -718,6 +718,8 @@ def test_embargoed_flaw_full_record_by_default(mock_osv: object, mock_nvd: objec
     assert r.summary == "Unclosed '[' in LDAP URL host spins thread forever"
     assert len(r.severity) >= 1
     assert r.affected[0].package.name != ""
+
+
 def test_jira_severity_cvss_v3() -> None:
     result = _jira_severity("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
     assert len(result) == 1
