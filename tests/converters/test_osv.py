@@ -10,10 +10,12 @@ from fath_cuan.converters.osv import (
     convert,
 )
 from fath_cuan.models.input import InputDocument
+from fath_cuan.osidb import OsidbClient
 from tests.conftest import (
     SAMPLE_DUPLICATE_CVE_DATA,
     SAMPLE_INPUT_DATA,
     SAMPLE_MULTI_CVE_DATA,
+    SAMPLE_NOVEL_INPUT,
     SAMPLE_WITH_UPSTREAM_VERSION,
 )
 
@@ -78,7 +80,7 @@ def test_affected_package(mock_osv: object, mock_nvd: object) -> None:
     pkg = results[0].affected[0].package
     assert pkg.ecosystem == "Maven"
     assert pkg.name == "org.example:artifact"
-    assert pkg.purl == "pkg:maven/org.example/artifact"
+    assert pkg.purl == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -428,3 +430,76 @@ def test_introduced_defaults_to_zero_without_upstream(mock_osv: object, mock_nvd
     results = convert(doc)
     events = results[0].affected[0].ranges[0].events
     assert events[0].introduced == "0"
+
+
+# ---------------------------------------------------------------------------
+# OSIDB integration
+# ---------------------------------------------------------------------------
+
+OSIDB_FLAW_RESPONSE = {
+    "count": 1,
+    "results": [{
+        "uuid": "33501a2f-eb62-4aaa-9815-36c9832afcee",
+        "vulnerability_id": "LW-2026-0468",
+        "cve_id": None,
+        "title": "Unclosed '[' in LDAP URL host spins thread forever",
+        "impact": "CRITICAL",
+        "source": "CUSTOMER",
+        "cwe_id": "CWE-835",
+        "cvss_scores": [{
+            "cvss_version": "V3",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+            "score": 7.5,
+        }],
+        "cve_description": "parseHost dispatches any host beginning with '['.",
+        "comment_zero": "",
+        "references": [{
+            "url": "https://gitlab.cee.redhat.com/duffy/bananach/-/work_items/468",
+            "type": "SOURCE",
+        }],
+        "affects": [],
+        "components": ["api-ldap-model"],
+        "embargoed": False,
+        "visibility": "PUBLIC",
+    }],
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_osidb_enriches_novel_record(mock_osv: object, mock_nvd: object) -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=OSIDB_FLAW_RESPONSE):
+        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        results = convert(doc, osidb_client=client)
+
+    r = results[0]
+    assert r.summary == "Unclosed '[' in LDAP URL host spins thread forever"
+    assert r.severity[0].score == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+    assert r.severity[0].type == "CVSS_V3"
+    assert len(r.references) >= 1
+    assert r.database_specific.lightwell.lw_id == "LW-2026-0468"
+    assert r.database_specific.lightwell.vulnerability_class == "CWE-835"
+    assert r.database_specific.lightwell.source == "novel-pipeline"
+    assert r.affected[0].package.purl == "pkg:maven/org.apache.directory.api/api-ldap-model@2.1.2.rhlw-00006"
+    mock_osv.assert_not_called()
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_osidb_unavailable_falls_back(mock_osv: object, mock_nvd: object) -> None:
+    with patch("fath_cuan.osidb._obtain_token", return_value=None):
+        client = OsidbClient(base_url="https://example.com")
+        doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+        results = convert(doc, osidb_client=client)
+    assert len(results) == 1
+    assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_convert_without_osidb_still_works(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"

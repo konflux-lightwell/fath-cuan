@@ -33,19 +33,33 @@ def main() -> None:
     help="Which output format to generate.",
 )
 @click.option("--embargo", is_flag=True, help="Generate pre-disclosure embargo stubs.")
+@click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
+@click.option("--osidb-url", default=None, help="OSIDB base URL (default: env OSIDB_URL or production).")
 def process(
     input: str,
     output_dir: Path,
     use_stdout: bool,
     output_format: str,
     embargo: bool,
+    osidb: bool,
+    osidb_url: str | None,
 ) -> None:
     """Process INPUT JSON into OSV and/or VEX files."""
     source = None if input == "-" else input
     raw = read_input(source)
 
+    osidb_client = None
+    if osidb:
+        from fath_cuan.osidb import OsidbClient
+
+        osidb_client = OsidbClient(base_url=osidb_url)
+        if osidb_client.available:
+            click.echo("OSIDB enrichment enabled")
+        else:
+            click.echo("WARNING: OSIDB requested but unavailable — falling back to OSV/NVD", err=True)
+
     if output_format in ("osv", "all"):
-        osv_records = process_osv(raw, embargo=embargo)
+        osv_records = process_osv(raw, embargo=embargo, osidb_client=osidb_client)
         for record in osv_records:
             if use_stdout:
                 write_to_stdout(record)

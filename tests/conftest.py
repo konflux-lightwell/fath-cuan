@@ -35,6 +35,13 @@ SAMPLE_WITH_UPSTREAM_VERSION = {
     "upstreamVersion": "1.33",
 }
 
+SAMPLE_NOVEL_INPUT = {
+    **SAMPLE_INPUT_DATA,
+    "vulns": ["LW-2026-0468"],
+    "primaryGav": "org.apache.directory.api:api-ldap-model:2.1.2.rhlw-00006",
+    "gavs": ["org.apache.directory.api:api-ldap-model:2.1.2.rhlw-00006"],
+}
+
 
 @pytest.fixture
 def sample_json_file(tmp_path: Path) -> Path:
