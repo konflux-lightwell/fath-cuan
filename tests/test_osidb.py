@@ -1,9 +1,6 @@
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
-
 
 SAMPLE_FLAW = {
     "uuid": "33501a2f-eb62-4aaa-9815-36c9832afcee",
@@ -58,7 +55,10 @@ SAMPLE_FLAW_WITH_CVE = {
     "cwe_id": "CWE-674",
     "cvss_scores": [],
     "cve_description": "",
-    "comment_zero": "## Vulnerability Details\n\n## Description\n\nThe class-not-found handler recurses.",
+    "comment_zero": (
+        "## Vulnerability Details\n\n## Description\n\n"
+        "The class-not-found handler recurses."
+    ),
     "references": [],
     "affects": [],
     "components": ["commons-lang3"],

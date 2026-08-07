@@ -7,7 +7,6 @@ import urllib.request
 from typing import Any
 
 from fath_cuan.models.input import InputDocument
-from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
 from fath_cuan.models.osv import (
     AffectedEntry,
     Credit,
@@ -20,6 +19,7 @@ from fath_cuan.models.osv import (
     Reference,
     Severity,
 )
+from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
 
 _OSV_ID_PREFIX = "x_RHLW-"
 _OSV_API = "https://api.osv.dev/v1/vulns"
@@ -328,11 +328,13 @@ def convert(
             nvd,
         ) if not _is_useful_summary(summary) else (summary, details)
 
-        if not references:
-            if cve_id.startswith("CVE-"):
-                references.append(
-                    Reference(url=f"https://nvd.nist.gov/vuln/detail/{cve_id}", type="ADVISORY")
+        if not references and cve_id.startswith("CVE-"):
+            references.append(
+                Reference(
+                    url=f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                    type="ADVISORY",
                 )
+            )
 
         introduced = _extract_introduced(upstream, coordinates) if upstream else "0"
 

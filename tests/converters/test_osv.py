@@ -481,7 +481,8 @@ def test_osidb_enriches_novel_record(mock_osv: object, mock_nvd: object) -> None
     assert r.database_specific.lightwell.lw_id == "LW-2026-0468"
     assert r.database_specific.lightwell.vulnerability_class == "CWE-835"
     assert r.database_specific.lightwell.source == "novel-pipeline"
-    assert r.affected[0].package.purl == "pkg:maven/org.apache.directory.api/api-ldap-model@2.1.2.rhlw-00006"
+    expected_purl = "pkg:maven/org.apache.directory.api/api-ldap-model@2.1.2.rhlw-00006"
+    assert r.affected[0].package.purl == expected_purl
     mock_osv.assert_not_called()
 
 

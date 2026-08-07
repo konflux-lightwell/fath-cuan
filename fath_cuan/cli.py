@@ -34,7 +34,10 @@ def main() -> None:
 )
 @click.option("--embargo", is_flag=True, help="Generate pre-disclosure embargo stubs.")
 @click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
-@click.option("--osidb-url", default=None, help="OSIDB base URL (default: env OSIDB_URL or production).")
+@click.option(
+    "--osidb-url", default=None,
+    help="OSIDB base URL (default: env OSIDB_URL or production).",
+)
 def process(
     input: str,
     output_dir: Path,
@@ -56,7 +59,10 @@ def process(
         if osidb_client.available:
             click.echo("OSIDB enrichment enabled")
         else:
-            click.echo("WARNING: OSIDB requested but unavailable — falling back to OSV/NVD", err=True)
+            click.echo(
+                "WARNING: OSIDB unavailable — falling back to OSV/NVD",
+                err=True,
+            )
 
     if output_format in ("osv", "all"):
         osv_records = process_osv(raw, embargo=embargo, osidb_client=osidb_client)
