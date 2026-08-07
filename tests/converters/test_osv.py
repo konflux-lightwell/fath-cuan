@@ -510,3 +510,53 @@ def test_convert_without_osidb_still_works(mock_osv: object, mock_nvd: object) -
     results = convert(doc)
     assert len(results) == 1
     assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"
+
+
+OSIDB_EMBARGOED_FLAW = {
+    "count": 1,
+    "results": [
+        {
+            **OSIDB_FLAW_RESPONSE["results"][0],
+            "embargoed": True,
+            "visibility": "EMBARGOED",
+        }
+    ],
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_embargoed_flaw_redacted_when_opted_in(mock_osv: object, mock_nvd: object) -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
+        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        results = convert(doc, osidb_client=client, redact_embargoed=True)
+
+    r = results[0]
+    assert r.database_specific.lightwell.embargo_status == "pre-disclosure"
+    assert r.affected[0].package.name == ""
+    assert r.affected[0].package.purl is None
+    assert r.aliases == []
+    assert r.summary == ""
+    assert r.severity == []
+    mock_osv.assert_not_called()
+    mock_nvd.assert_not_called()
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_embargoed_flaw_full_record_by_default(mock_osv: object, mock_nvd: object) -> None:
+    """Without redact_embargoed, embargoed flaws produce full records.
+
+    The Pulp OSV repo is protected by a content guard — all consumers
+    are authenticated, so full records are safe within the protected feed.
+    """
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
+        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        results = convert(doc, osidb_client=client)
+
+    r = results[0]
+    assert r.summary == "Unclosed '[' in LDAP URL host spins thread forever"
+    assert len(r.severity) >= 1
+    assert r.affected[0].package.name != ""

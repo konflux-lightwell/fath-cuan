@@ -140,3 +140,50 @@ def test_client_get_flaw_returns_none_when_unavailable() -> None:
         client = OsidbClient(base_url="https://example.com")
         result = client.get_flaw("LW-2026-0468")
         assert result is None
+
+
+def test_customer_report_refs_filtered_out() -> None:
+    flaw = {
+        **SAMPLE_FLAW,
+        "references": [
+            {"url": "https://gitlab.cee.redhat.com/work_items/468", "type": "SOURCE"},
+            {"url": "https://support.redhat.com/case/123", "type": "CUSTOMER_REPORT"},
+        ],
+    }
+    meta = extract_osidb_metadata(flaw)
+    urls = [r["url"] for r in meta["references"]]
+    assert "https://support.redhat.com/case/123" not in urls
+    assert "https://gitlab.cee.redhat.com/work_items/468" in urls
+
+
+def test_upstream_ref_typed_as_fix_with_commit_url() -> None:
+    flaw = {
+        **SAMPLE_FLAW,
+        "references": [
+            {"url": "https://github.com/apache/project/commit/abc123", "type": "UPSTREAM"},
+        ],
+    }
+    meta = extract_osidb_metadata(flaw)
+    assert meta["references"][0]["type"] == "FIX"
+
+
+def test_upstream_ref_without_commit_falls_back_to_web() -> None:
+    flaw = {
+        **SAMPLE_FLAW,
+        "references": [
+            {"url": "https://github.com/apache/project/pull/42", "type": "UPSTREAM"},
+        ],
+    }
+    meta = extract_osidb_metadata(flaw)
+    assert meta["references"][0]["type"] == "WEB"
+
+
+def test_external_nvd_ref_typed_as_advisory() -> None:
+    flaw = {
+        **SAMPLE_FLAW,
+        "references": [
+            {"url": "https://nvd.nist.gov/vuln/detail/CVE-2025-48924", "type": "EXTERNAL"},
+        ],
+    }
+    meta = extract_osidb_metadata(flaw)
+    assert meta["references"][0]["type"] == "ADVISORY"

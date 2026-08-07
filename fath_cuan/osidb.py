@@ -152,18 +152,40 @@ def extract_osidb_metadata(flaw: dict[str, Any]) -> dict[str, Any]:
             osv_type = "CVSS_V4" if version == "V4" else "CVSS_V3"
             meta["cvss_vectors"].append({"type": osv_type, "score": vector})
 
+    _OSIDB_TYPE_MAP: dict[str, str | None] = {
+        "ARTICLE": "WEB",
+        "EXTERNAL": "WEB",
+        "UPSTREAM": "FIX",
+        "SOURCE": "WEB",
+        "CUSTOMER_REPORT": None,
+    }
+
     meta["references"] = []
     for ref in flaw.get("references", []):
         url = ref.get("url", "")
         ref_type = ref.get("type", "")
-        if url:
-            if "/commit/" in url or "/commits/" in url:
-                osv_type = "FIX"
-            elif "nvd.nist.gov" in url or "advisories" in url or ref_type == "ADVISORY":
-                osv_type = "ADVISORY"
-            else:
-                osv_type = "WEB"
-            meta["references"].append({"url": url, "type": osv_type})
+        if not url:
+            continue
+
+        mapped = _OSIDB_TYPE_MAP.get(ref_type, "WEB")
+        if mapped is None:
+            continue
+        osv_type = mapped
+
+        if "/commit/" in url or "/commits/" in url:
+            osv_type = "FIX"
+        elif osv_type == "FIX" and "/commit" not in url:
+            osv_type = "WEB"
+
+        if osv_type == "WEB" and (
+            "nvd.nist.gov" in url
+            or "cve.mitre.org" in url
+            or "/advisories/" in url
+            or "/advisory/" in url
+        ):
+            osv_type = "ADVISORY"
+
+        meta["references"].append({"url": url, "type": osv_type})
 
     meta["components"] = flaw.get("components", [])
 

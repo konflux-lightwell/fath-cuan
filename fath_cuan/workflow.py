@@ -12,10 +12,16 @@ def process_osv(
     input_json: dict[str, Any],
     embargo: bool = False,
     osidb_client: OsidbClient | None = None,
+    redact_embargoed: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert input JSON into a list of OSV records (one per CVE)."""
     doc = InputDocument.from_dict(input_json)
-    osv_docs = osv_converter.convert(doc, embargo=embargo, osidb_client=osidb_client)
+    osv_docs = osv_converter.convert(
+        doc,
+        embargo=embargo,
+        osidb_client=osidb_client,
+        redact_embargoed=redact_embargoed,
+    )
     return [d.model_dump(exclude_none=True) for d in osv_docs]
 
 

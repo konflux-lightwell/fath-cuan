@@ -231,6 +231,7 @@ def convert(
     doc: InputDocument,
     embargo: bool = False,
     osidb_client: OsidbClient | None = None,
+    redact_embargoed: bool = False,
 ) -> list[OSVDocument]:
     """Convert a PNC gav-index into one OSV record per CVE.
 
@@ -238,6 +239,12 @@ def convert(
     1. OSIDB (structured vulnerability metadata, when available)
     2. Upstream OSV (osv.dev)
     3. NVD (fallback for missing summary/severity)
+
+    The Pulp OSV repo is currently protected by a content guard and is
+    not public. All novel findings are embargoed by default within the
+    protected feed. Set redact_embargoed=True to produce redacted stubs
+    for embargoed flaws — use this when generating files destined for a
+    public or less-trusted distribution.
     """
     group_id, artifact_id, version = _parse_gav(doc.primary_gav)
     base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
@@ -285,6 +292,33 @@ def convert(
             flaw = osidb_client.get_flaw(cve_id)
             if flaw:
                 osidb_meta = extract_osidb_metadata(flaw)
+
+        # Embargo redaction is opt-in. The current Pulp OSV repo is
+        # protected by a content guard (not public), so full records are
+        # safe for authenticated consumers. Enable redact_embargoed when
+        # generating for a public or less-trusted feed.
+        if redact_embargoed and osidb_meta and osidb_meta.get("embargoed"):
+            record = OSVDocument(
+                id=osv_id,
+                published=published,
+                modified=modified,
+                aliases=[],
+                affected=[
+                    AffectedEntry(
+                        package=Package(name="", purl=None),
+                        ranges=[],
+                    )
+                ],
+                credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+                database_specific=DatabaseSpecific(
+                    lightwell=LightwellMeta(
+                        backport_base_version=base_ver,
+                        embargo_status="pre-disclosure",
+                    )
+                ),
+            )
+            records.append(record)
+            continue
 
         upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
         nvd = None

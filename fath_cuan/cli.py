@@ -39,6 +39,11 @@ def main() -> None:
     default=None,
     help="OSIDB base URL (default: env OSIDB_URL or production).",
 )
+@click.option(
+    "--redact-embargoed",
+    is_flag=True,
+    help="Redact embargoed OSIDB flaws to stubs (for public feeds).",
+)
 def process(
     input: str,
     output_dir: Path,
@@ -47,6 +52,7 @@ def process(
     embargo: bool,
     osidb: bool,
     osidb_url: str | None,
+    redact_embargoed: bool,
 ) -> None:
     """Process INPUT JSON into OSV and/or VEX files."""
     source = None if input == "-" else input
@@ -66,7 +72,12 @@ def process(
             )
 
     if output_format in ("osv", "all"):
-        osv_records = process_osv(raw, embargo=embargo, osidb_client=osidb_client)
+        osv_records = process_osv(
+            raw,
+            embargo=embargo,
+            osidb_client=osidb_client,
+            redact_embargoed=redact_embargoed,
+        )
         for record in osv_records:
             if use_stdout:
                 write_to_stdout(record)
