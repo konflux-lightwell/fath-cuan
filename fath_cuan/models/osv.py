@@ -45,6 +45,8 @@ class LightwellMeta(BaseModel):
     backport_base_version: str
     embargo_status: str | None = None
     embargo_expires: str | None = None
+    lw_id: str | None = None
+    vulnerability_class: str | None = None
 
 
 class DatabaseSpecific(BaseModel):

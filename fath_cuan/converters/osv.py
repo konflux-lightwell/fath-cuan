@@ -19,6 +19,7 @@ from fath_cuan.models.osv import (
     Reference,
     Severity,
 )
+from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
 
 _OSV_ID_PREFIX = "x_RHLW-"
 _OSV_API = "https://api.osv.dev/v1/vulns"
@@ -174,6 +175,30 @@ def _extract_aliases(upstream: dict[str, Any], cve_id: str) -> list[str]:
     return aliases
 
 
+_USELESS_SUMMARIES = frozenset(
+    {
+        "fixed",
+        "fixed.",
+        "update",
+        "update.",
+        "patch",
+        "patch.",
+        "security fix",
+        "security fix.",
+        "bug fix",
+        "bug fix.",
+    }
+)
+
+
+def _is_useful_summary(text: str) -> bool:
+    """Return False for summaries that are too short or generic to be informative."""
+    stripped = text.strip()
+    if not stripped or len(stripped) < 5:
+        return False
+    return stripped.lower() not in _USELESS_SUMMARIES
+
+
 def _extract_summary_details(
     upstream: dict[str, Any] | None, nvd: dict[str, Any] | None
 ) -> tuple[str, str]:
@@ -182,8 +207,13 @@ def _extract_summary_details(
     details = ""
 
     if upstream:
-        summary = upstream.get("summary", "")
+        candidate = upstream.get("summary", "")
+        if _is_useful_summary(candidate):
+            summary = candidate
         details = upstream.get("details", "")
+
+    if not summary and details and _is_useful_summary(details):
+        summary = details.split("\n", 1)[0]
 
     if not summary and nvd:
         descriptions = nvd.get("descriptions", [])
@@ -197,16 +227,29 @@ def _extract_summary_details(
     return summary, details
 
 
-def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
+def convert(
+    doc: InputDocument,
+    embargo: bool = False,
+    osidb_client: OsidbClient | None = None,
+    redact_embargoed: bool = False,
+) -> list[OSVDocument]:
     """Convert a PNC gav-index into one OSV record per CVE.
 
-    Matches the Lightwell OSV format specification. Fetches upstream CVE
-    data from osv.dev with NVD fallback for missing fields.
+    Matches the Lightwell OSV format specification. Data source priority:
+    1. OSIDB (structured vulnerability metadata, when available)
+    2. Upstream OSV (osv.dev)
+    3. NVD (fallback for missing summary/severity)
+
+    The Pulp OSV repo is currently protected by a content guard and is
+    not public. All novel findings are embargoed by default within the
+    protected feed. Set redact_embargoed=True to produce redacted stubs
+    for embargoed flaws — use this when generating files destined for a
+    public or less-trusted distribution.
     """
     group_id, artifact_id, version = _parse_gav(doc.primary_gav)
     base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
     coordinates = f"{group_id}:{artifact_id}"
-    purl = f"pkg:maven/{group_id}/{artifact_id}"
+    purl = f"pkg:maven/{group_id}/{artifact_id}@{version}"
 
     published = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
@@ -244,30 +287,106 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             records.append(record)
             continue
 
-        upstream = _fetch_upstream_osv(cve_id)
+        osidb_meta: dict[str, Any] | None = None
+        if osidb_client and osidb_client.available:
+            flaw = osidb_client.get_flaw(cve_id)
+            if flaw:
+                osidb_meta = extract_osidb_metadata(flaw)
+
+        # Embargo redaction is opt-in. The current Pulp OSV repo is
+        # protected by a content guard (not public), so full records are
+        # safe for authenticated consumers. Enable redact_embargoed when
+        # generating for a public or less-trusted feed.
+        if redact_embargoed and osidb_meta and osidb_meta.get("embargoed"):
+            record = OSVDocument(
+                id=osv_id,
+                published=published,
+                modified=modified,
+                aliases=[],
+                affected=[
+                    AffectedEntry(
+                        package=Package(name="", purl=None),
+                        ranges=[],
+                    )
+                ],
+                credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+                database_specific=DatabaseSpecific(
+                    lightwell=LightwellMeta(
+                        backport_base_version=base_ver,
+                        embargo_status="pre-disclosure",
+                    )
+                ),
+            )
+            records.append(record)
+            continue
+
+        upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
         nvd = None
 
         severity: list[Severity] = []
-        references: list[Reference] = [
-            Reference(url=f"https://nvd.nist.gov/vuln/detail/{cve_id}", type="ADVISORY")
-        ]
+        references: list[Reference] = []
         aliases: list[str] = [cve_id]
         summary = ""
         details = ""
+        lw_meta_extra: dict[str, str] = {}
+
+        if osidb_meta:
+            summary = osidb_meta.get("title", "")
+            details = osidb_meta.get("description", "")
+
+            for cv in osidb_meta.get("cvss_vectors", []):
+                severity.append(Severity(type=cv["type"], score=cv["score"]))
+
+            for ref in osidb_meta.get("references", []):
+                references.append(Reference(url=ref["url"], type=ref["type"]))
+
+            osidb_cve = osidb_meta.get("cve_id")
+            if osidb_cve and osidb_cve not in aliases:
+                aliases.append(osidb_cve)
+
+            vuln_id = osidb_meta.get("vulnerability_id", "")
+            if vuln_id:
+                lw_meta_extra["lw_id"] = vuln_id
+
+            cwe = osidb_meta.get("cwe_id", "")
+            if cwe:
+                lw_meta_extra["vulnerability_class"] = cwe
 
         if upstream:
-            references = _extract_references(upstream, cve_id)
+            if not references:
+                references = _extract_references(upstream, cve_id)
             aliases = _extract_aliases(upstream, cve_id)
-            summary = upstream.get("summary", "")
-            details = upstream.get("details", "")
+            if not summary:
+                summary = upstream.get("summary", "")
+            if not details:
+                details = upstream.get("details", "")
 
-        if not summary or not severity:
-            nvd = _fetch_nvd(cve_id)
+        if not _is_useful_summary(summary) or not severity:
+            nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
 
-        severity = _extract_severity(upstream or {}, nvd)
-        summary, details = _extract_summary_details(upstream, nvd)
+        if not severity:
+            severity = _extract_severity(upstream or {}, nvd)
+
+        summary, details = (
+            _extract_summary_details(
+                upstream if not osidb_meta else None,
+                nvd,
+            )
+            if not _is_useful_summary(summary)
+            else (summary, details)
+        )
+
+        if not references and cve_id.startswith("CVE-"):
+            references.append(
+                Reference(
+                    url=f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                    type="ADVISORY",
+                )
+            )
 
         introduced = _extract_introduced(upstream, coordinates) if upstream else "0"
+
+        source = "novel-pipeline" if cve_id.startswith("LW-") else "pnc-build"
 
         affected = AffectedEntry(
             package=Package(name=coordinates, purl=purl),
@@ -282,6 +401,12 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             ],
         )
 
+        lw_meta = LightwellMeta(
+            source=source,
+            backport_base_version=base_ver,
+            **lw_meta_extra,
+        )
+
         record = OSVDocument(
             id=osv_id,
             published=published,
@@ -293,11 +418,7 @@ def convert(doc: InputDocument, embargo: bool = False) -> list[OSVDocument]:
             aliases=aliases,
             affected=[affected],
             credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
-            database_specific=DatabaseSpecific(
-                lightwell=LightwellMeta(
-                    backport_base_version=base_ver,
-                )
-            ),
+            database_specific=DatabaseSpecific(lightwell=lw_meta),
         )
         records.append(record)
 
