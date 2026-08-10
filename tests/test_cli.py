@@ -113,6 +113,52 @@ class TestBuildJiraClient:
             assert _build_jira_client() is None
 
 
+class TestJiraFlag:
+    @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+    @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+    def test_jira_not_called_without_flag(self, mock_osv: object, mock_nvd: object) -> None:
+        runner = CliRunner()
+        with (
+            patch.dict(os.environ, {"JIRA_TOKEN": "secret"}, clear=True),
+            patch("fath_cuan.cli._build_jira_client") as mock_build,
+        ):
+            result = runner.invoke(
+                main,
+                ["process", "--stdout", "--format", "osv", "-"],
+                input=json.dumps(SAMPLE_INPUT_DATA),
+            )
+            mock_build.assert_not_called()
+        assert result.exit_code == 0
+
+    @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+    @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+    def test_jira_enabled_with_flag(self, mock_osv: object, mock_nvd: object) -> None:
+        runner = CliRunner()
+        with patch.dict(os.environ, {"JIRA_TOKEN": "secret"}, clear=True):
+            result = runner.invoke(
+                main,
+                ["process", "--jira", "--stdout", "--format", "osv", "-"],
+                input=json.dumps(SAMPLE_INPUT_DATA),
+            )
+        assert result.exit_code == 0
+        assert "JIRA enrichment enabled" in result.output
+
+    @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+    @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+    @patch("fath_cuan.cli._build_jira_client", return_value=None)
+    def test_jira_warns_without_token(
+        self, mock_build: object, mock_osv: object, mock_nvd: object
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["process", "--jira", "--stdout", "--format", "osv", "-"],
+            input=json.dumps(SAMPLE_INPUT_DATA),
+        )
+        assert result.exit_code == 0
+        mock_build.assert_called_once()
+
+
 class TestVerbosity:
     def _invoke_with_verbosity(self, flags: list[str]) -> None:
         runner = CliRunner()

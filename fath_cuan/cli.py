@@ -58,6 +58,7 @@ def main(verbose: int) -> None:
     help="Which output format to generate.",
 )
 @click.option("--embargo", is_flag=True, help="Generate pre-disclosure embargo stubs.")
+@click.option("--jira", is_flag=True, help="Enrich from JIRA (requires JIRA_TOKEN).")
 @click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
 @click.option(
     "--osidb-url",
@@ -75,6 +76,7 @@ def process(
     use_stdout: bool,
     output_format: str,
     embargo: bool,
+    jira: bool,
     osidb: bool,
     osidb_url: str | None,
     redact_embargoed: bool,
@@ -96,7 +98,16 @@ def process(
                 err=True,
             )
 
-    jira_client = _build_jira_client()
+    jira_client = None
+    if jira:
+        jira_client = _build_jira_client()
+        if jira_client is not None:
+            click.echo("JIRA enrichment enabled")
+        else:
+            click.echo(
+                "WARNING: JIRA unavailable — set JIRA_TOKEN to enable",
+                err=True,
+            )
 
     if output_format in ("osv", "all"):
         osv_records = process_osv(
