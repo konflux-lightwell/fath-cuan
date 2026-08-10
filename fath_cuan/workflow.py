@@ -20,7 +20,7 @@ def process_osv(
     redact_embargoed: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert input JSON into a list of OSV records (one per CVE)."""
-    logger.info("Processing OSV records for %s", input_json)
+    logger.info("Processing OSV records for %s", input_json.get("primaryGav", ""))
     doc = InputDocument.from_dict(input_json)
     logger.info("Converting to OSV records")
     osv_docs = osv_converter.convert(
@@ -35,7 +35,7 @@ def process_osv(
 
 
 def process_vex(input_json: dict[str, Any]) -> dict[str, Any]:
-    logger.info("Processing VEX records for %s", input_json)
+    logger.info("Processing VEX records for %s", input_json.get("primaryGav", ""))
     doc = InputDocument.from_dict(input_json)
     logger.info("Converting to VEX record")
     vex_doc = vex_converter.convert(doc)
