@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 
 import click
@@ -7,13 +9,36 @@ import click
 import fath_cuan
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
+from fath_cuan.jira.client import JiraClient
 from fath_cuan.workflow import process_osv, process_vex
+
+
+def _build_jira_client() -> JiraClient | None:
+    """Create a JiraClient from environment variables, if configured."""
+    token = os.environ.get("JIRA_TOKEN")
+    if not token:
+        return None
+    email = os.environ.get("JIRA_EMAIL", "")
+    server = os.environ.get("JIRA_SERVER", "")
+    kwargs: dict[str, str] = {"token": token}
+    if email:
+        kwargs["email"] = email
+    if server:
+        kwargs["server"] = server
+    return JiraClient(**kwargs)
+
+
+_LOG_LEVELS = [logging.WARNING, logging.INFO, logging.DEBUG]
 
 
 @click.group()
 @click.version_option(version=fath_cuan.__version__)
-def main() -> None:
+@click.option("-v", "--verbose", count=True, help="Increase verbosity (repeat for more: -vvv).")
+def main(verbose: int) -> None:
     """fath-cuan: Convert JSON into OSV and VEX files."""
+    level = _LOG_LEVELS[min(verbose, len(_LOG_LEVELS) - 1)]
+    logging.basicConfig(format="%(levelname)s: %(name)s: %(message)s")
+    logging.root.setLevel(level)
 
 
 @main.command()
@@ -33,6 +58,7 @@ def main() -> None:
     help="Which output format to generate.",
 )
 @click.option("--embargo", is_flag=True, help="Generate pre-disclosure embargo stubs.")
+@click.option("--jira", is_flag=True, help="Enrich from JIRA (requires JIRA_TOKEN).")
 @click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
 @click.option(
     "--osidb-url",
@@ -50,6 +76,7 @@ def process(
     use_stdout: bool,
     output_format: str,
     embargo: bool,
+    jira: bool,
     osidb: bool,
     osidb_url: str | None,
     redact_embargoed: bool,
@@ -71,11 +98,23 @@ def process(
                 err=True,
             )
 
+    jira_client = None
+    if jira:
+        jira_client = _build_jira_client()
+        if jira_client is not None:
+            click.echo("JIRA enrichment enabled")
+        else:
+            click.echo(
+                "WARNING: JIRA unavailable — set JIRA_TOKEN to enable",
+                err=True,
+            )
+
     if output_format in ("osv", "all"):
         osv_records = process_osv(
             raw,
             embargo=embargo,
             osidb_client=osidb_client,
+            jira_client=jira_client,
             redact_embargoed=redact_embargoed,
         )
         for record in osv_records:

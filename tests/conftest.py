@@ -39,7 +39,16 @@ SAMPLE_NOVEL_INPUT = {
     **SAMPLE_INPUT_DATA,
     "vulns": ["LW-2026-0468"],
     "primaryGav": "org.apache.directory.api:api-ldap-model:2.1.2.rhlw-00006",
-    "gavs": ["org.apache.directory.api:api-ldap-model:2.1.2.rhlw-00006"],
+}
+
+SAMPLE_LW_VULN_DATA = {
+    **SAMPLE_INPUT_DATA,
+    "vulns": ["LW-2026-0468"],
+}
+
+SAMPLE_MIXED_VULN_DATA = {
+    **SAMPLE_INPUT_DATA,
+    "vulns": ["CVE-2024-25710", "LW-2026-0468"],
 }
 
 

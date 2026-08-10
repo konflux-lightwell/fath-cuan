@@ -6,14 +6,18 @@ from fath_cuan.converters.osv import (
     _base_version,
     _classify_reference_type,
     _extract_introduced,
+    _jira_severity,
     _parse_gav,
     convert,
 )
+from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.input import InputDocument
 from fath_cuan.osidb import OsidbClient
 from tests.conftest import (
     SAMPLE_DUPLICATE_CVE_DATA,
     SAMPLE_INPUT_DATA,
+    SAMPLE_LW_VULN_DATA,
+    SAMPLE_MIXED_VULN_DATA,
     SAMPLE_MULTI_CVE_DATA,
     SAMPLE_NOVEL_INPUT,
     SAMPLE_WITH_UPSTREAM_VERSION,
@@ -101,6 +105,7 @@ def test_base_version_stripped_in_metadata(mock_osv: object, mock_nvd: object) -
     lw = results[0].database_specific.lightwell
     assert lw.backport_base_version == "1.0.0"
     assert lw.source == "pnc-build"
+    assert lw.lw_id is None
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -539,6 +544,159 @@ def test_embargoed_flaw_redacted_when_opted_in(mock_osv: object, mock_nvd: objec
     assert r.aliases == []
     assert r.summary == ""
     assert r.severity == []
+
+
+# --- LW- identifier tests ---
+
+
+SAMPLE_JIRA_VULN_DATA = VulnerabilityData(
+    key="VULN-1234",
+    summary="Buffer overflow in libfoo",
+    details="A buffer overflow vulnerability exists in libfoo allowing remote code execution.",
+    severity="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    cve_id="LW-2026-0468",
+)
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_uses_jira(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    mock_jira.assert_called_once_with("LW-2026-0468", None)
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_summary_from_jira(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert results[0].summary == "Buffer overflow in libfoo"
+    assert "remote code execution" in results[0].details
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_severity_cvss_v3(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert len(results[0].severity) == 1
+    assert results[0].severity[0].type == "CVSS_V3"
+    assert results[0].severity[0].score == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_severity_cvss_v4(mock_jira: object) -> None:
+    jira_data = VulnerabilityData(
+        key="VULN-1234",
+        summary="Test",
+        details="Test",
+        severity="CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H",
+        cve_id="LW-2026-0468",
+    )
+    mock_jira.return_value = jira_data
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert results[0].severity[0].type == "CVSS_V4"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_non_cvss_severity_excluded(mock_jira: object) -> None:
+    jira_data = VulnerabilityData(
+        key="VULN-1234",
+        summary="Test",
+        details="Test",
+        severity="Critical",
+        cve_id="LW-2026-0468",
+    )
+    mock_jira.return_value = jira_data
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert results[0].severity == []
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_aliases_contain_only_lw_id(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert results[0].aliases == ["LW-2026-0468"]
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_no_references(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert results[0].references == []
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_osv_id_format(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert results[0].id == "x_RHLW-LW-2026-0468-1.0.0"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_affected_package(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    pkg = results[0].affected[0].package
+    assert pkg.name == "org.example:artifact"
+    assert pkg.purl == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
+    events = results[0].affected[0].ranges[0].events
+    assert events[0].introduced == "0"
+    assert events[1].fixed == "1.0.0.rhlw-00001"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_database_specific(mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    lw = results[0].database_specific.lightwell
+    assert lw.source == "novel-pipeline"
+    assert lw.backport_base_version == "1.0.0"
+    assert lw.lw_id == "LW-2026-0468"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+def test_lw_id_jira_returns_none(mock_jira: object) -> None:
+    mock_jira.return_value = None
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    assert results[0].summary == ""
+    assert results[0].details == ""
+    assert results[0].severity == []
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_mixed_cve_and_lw_ids(mock_osv: object, mock_nvd: object, mock_jira: object) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_MIXED_VULN_DATA)
+    results = convert(doc)
+    assert len(results) == 2
+    assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"
+    assert results[1].id == "x_RHLW-LW-2026-0468-1.0.0"
+    assert results[1].summary == "Buffer overflow in libfoo"
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_lw_id_does_not_call_upstream(
+    mock_osv: object, mock_nvd: object, mock_jira: object
+) -> None:
+    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    convert(doc)
     mock_osv.assert_not_called()
     mock_nvd.assert_not_called()
 
@@ -560,3 +718,29 @@ def test_embargoed_flaw_full_record_by_default(mock_osv: object, mock_nvd: objec
     assert r.summary == "Unclosed '[' in LDAP URL host spins thread forever"
     assert len(r.severity) >= 1
     assert r.affected[0].package.name != ""
+
+
+def test_jira_severity_cvss_v3() -> None:
+    result = _jira_severity("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+    assert len(result) == 1
+    assert result[0].type == "CVSS_V3"
+
+
+def test_jira_severity_cvss_v4() -> None:
+    result = _jira_severity("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H")
+    assert len(result) == 1
+    assert result[0].type == "CVSS_V4"
+
+
+def test_jira_severity_cvss_v2() -> None:
+    result = _jira_severity("CVSS:2.0/AV:N/AC:L/Au:N/C:P/I:P/A:P")
+    assert len(result) == 1
+    assert result[0].type == "CVSS_V2"
+
+
+def test_jira_severity_non_cvss_returns_empty() -> None:
+    assert _jira_severity("Critical") == []
+
+
+def test_jira_severity_empty_returns_empty() -> None:
+    assert _jira_severity("") == []
