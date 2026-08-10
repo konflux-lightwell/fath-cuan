@@ -28,6 +28,10 @@ def _parse_description(text: str) -> tuple[str, str]:
     desc_match = _DESCRIPTION_PATTERN.search(text)
     details = desc_match.group(1).strip() if desc_match else ""
 
+    if not summary:
+        logger.warning("Summary not found in JIRA's description: %s", text)
+    if not details:
+        logger.warning("Details not found in JIRA's description: %s", text)
     return summary, details
 
 
