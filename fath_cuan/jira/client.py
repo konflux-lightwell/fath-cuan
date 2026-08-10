@@ -144,7 +144,7 @@ class JiraClient:
     def search_vulnerability(self, lw_id: str) -> list[JiraIssue]:
         """Search for JIRA Vulnerability issues matching a Lightwell identifier.
 
-        Uses JQL: textfields ~ "<lw_id>" AND type = Vulnerability
+        Uses JQL: CVE ID ~ "<lw_id>" AND type = Vulnerability
         """
         logger.debug("Searching for vulnerability %s", lw_id)
         if not _LW_ID_PATTERN.match(lw_id):
@@ -152,7 +152,7 @@ class JiraClient:
             raise ValueError(
                 f"Invalid Lightwell identifier format: {lw_id!r}, expected LW-YYYY-XXXX"
             )
-        jql = f'textfields ~ "{lw_id}" AND type = Vulnerability'
+        jql = f'"CVE ID[Short text]" ~ "{lw_id}" AND type = Vulnerability'
         data = self.get("/search/jql", {"jql": jql, "fields": "summary,status,issuetype"})
         issues: list[JiraIssue] = []
         logger.debug("Received %d issues", len(data.get("issues", [])))

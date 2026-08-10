@@ -177,9 +177,10 @@ class TestSearchVulnerability:
         client.search_vulnerability("LW-2026-0468")
 
         req = mock_urlopen.call_args[0][0]
-        assert "textfields" in urllib.parse.unquote(req.full_url)
-        assert "LW-2026-0468" in urllib.parse.unquote(req.full_url)
-        assert "Vulnerability" in urllib.parse.unquote(req.full_url)
+        url = urllib.parse.unquote_plus(req.full_url)
+        assert "CVE ID[Short text]" in url
+        assert "LW-2026-0468" in url
+        assert "Vulnerability" in url
 
     @patch("fath_cuan.jira.client.urllib.request.urlopen")
     def test_empty_results(self, mock_urlopen: MagicMock) -> None:
