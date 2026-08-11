@@ -532,6 +532,24 @@ def refresh(
         logger.warning("No fixed version in %s — returning unchanged", record.id)
         return record
 
+    # Check OSIDB for the correct sub-artifact. Multi-module Maven builds
+    # often attribute CVEs to the wrong sub-module (e.g. spring-core when
+    # the fix is in spring-expression). OSIDB affects[].ps_component has
+    # the authoritative mapping.
+    if osidb_client and osidb_client.available:
+        flaw = osidb_client.get_flaw(vuln_id)
+        if flaw:
+            osidb_components = flaw.get("components", [])
+            if osidb_components and osidb_components[0] != artifact_id:
+                old_artifact = artifact_id
+                artifact_id = osidb_components[0]
+                logger.info(
+                    "OSIDB corrected sub-artifact: %s -> %s for %s",
+                    old_artifact,
+                    artifact_id,
+                    vuln_id,
+                )
+
     base_ver = record.database_specific.lightwell.backport_base_version
     if not base_ver:
         base_ver = _base_version(fixed_version)

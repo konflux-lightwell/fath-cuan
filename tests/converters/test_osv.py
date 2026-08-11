@@ -840,3 +840,71 @@ def test_refresh_novel_with_osidb(mock_osv: object, mock_nvd: object) -> None:
     assert result.database_specific.lightwell.vulnerability_class == "CWE-835"
     assert result.database_specific.lightwell.source == "novel-pipeline"
     mock_osv.assert_not_called()
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_refresh_corrects_sub_artifact_from_osidb(mock_osv: object, mock_nvd: object) -> None:
+    """OSIDB components[] overrides wrong sub-artifact attribution."""
+    osidb_response = {
+        "count": 1,
+        "results": [
+            {
+                "uuid": "test-uuid",
+                "vulnerability_id": "CVE-2023-20861",
+                "cve_id": "CVE-2023-20861",
+                "title": "SpEL DoS",
+                "impact": "MODERATE",
+                "source": "CVE",
+                "cwe_id": "CWE-400",
+                "cvss_scores": [],
+                "cve_description": "Spring Expression Language DoS",
+                "comment_zero": "",
+                "references": [],
+                "affects": [
+                    {"ps_module": "LTWL", "ps_component": "spring-expression"},
+                ],
+                "components": ["spring-expression"],
+                "embargoed": False,
+                "visibility": "PUBLIC",
+            }
+        ],
+    }
+    # Record incorrectly says spring-core
+    wrong_record = {
+        **SAMPLE_OSV_RECORD,
+        "id": "x_RHLW-CVE-2023-20861-5.3.18",
+        "aliases": ["CVE-2023-20861"],
+        "affected": [
+            {
+                "package": {
+                    "ecosystem": "Maven",
+                    "name": "org.springframework:spring-core",
+                    "purl": "pkg:maven/org.springframework/spring-core",
+                },
+                "versions": ["5.3.18"],
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [
+                            {"introduced": "0"},
+                            {"fixed": "5.3.18.rhlw-00010"},
+                        ],
+                    }
+                ],
+            }
+        ],
+        "database_specific": {
+            "lightwell": {
+                "source": "pnc-build",
+                "backport_base_version": "5.3.18",
+            }
+        },
+    }
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=osidb_response):
+        record = OSVDocument.model_validate(wrong_record)
+        result = refresh(record, osidb_client=client)
+
+    assert result.affected[0].package.name == "org.springframework:spring-expression"
+    assert "spring-expression" in (result.affected[0].package.purl or "")
