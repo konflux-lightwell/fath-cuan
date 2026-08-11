@@ -52,6 +52,76 @@ SAMPLE_MIXED_VULN_DATA = {
 }
 
 
+SAMPLE_OSV_RECORD = {
+    "schema_version": "1.6.8",
+    "id": "x_RHLW-CVE-2024-25710-1.0.0",
+    "published": "2026-07-15T14:02:27Z",
+    "modified": "2026-07-15T14:02:27Z",
+    "summary": "",
+    "details": "",
+    "severity": [],
+    "references": [],
+    "aliases": ["CVE-2024-25710"],
+    "affected": [
+        {
+            "package": {
+                "ecosystem": "Maven",
+                "name": "org.example:artifact",
+                "purl": "pkg:maven/org.example/artifact",
+            },
+            "versions": ["1.0.0"],
+            "ranges": [
+                {
+                    "type": "ECOSYSTEM",
+                    "events": [
+                        {"introduced": "0"},
+                        {"fixed": "1.0.0.rhlw-00001"},
+                    ],
+                }
+            ],
+        }
+    ],
+    "credits": [{"name": "Red Hat Lightwell", "type": "REMEDIATION_DEVELOPER"}],
+    "database_specific": {
+        "lightwell": {
+            "source": "pnc-build",
+            "backport_base_version": "1.0.0",
+        }
+    },
+}
+
+SAMPLE_NOVEL_OSV_RECORD = {
+    **SAMPLE_OSV_RECORD,
+    "id": "x_RHLW-LW-2026-0468-2.1.2",
+    "aliases": [],
+    "affected": [
+        {
+            "package": {
+                "ecosystem": "Maven",
+                "name": "org.apache.directory.api:api-ldap-model",
+                "purl": "pkg:maven/org.apache.directory.api/api-ldap-model",
+            },
+            "versions": ["2.1.2"],
+            "ranges": [
+                {
+                    "type": "ECOSYSTEM",
+                    "events": [
+                        {"introduced": "0"},
+                        {"fixed": "2.1.2.rhlw-00006"},
+                    ],
+                }
+            ],
+        }
+    ],
+    "database_specific": {
+        "lightwell": {
+            "source": "novel-pipeline",
+            "backport_base_version": "2.1.2",
+        }
+    },
+}
+
+
 @pytest.fixture
 def sample_json_file(tmp_path: Path) -> Path:
     p = tmp_path / "input.json"

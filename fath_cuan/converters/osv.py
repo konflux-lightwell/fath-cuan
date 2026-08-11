@@ -482,3 +482,111 @@ def convert(
 
     logger.info("Generated %d OSV records", len(records))
     return records
+
+
+_ID_PATTERN = re.compile(r"^x_RHLW-((?:CVE-\d{4}-\d+|LW-\d{4}-\d+))-(.+)$")
+
+
+def refresh(
+    record: OSVDocument,
+    osidb_client: OsidbClient | None = None,
+    jira_client: JiraClient | None = None,
+    redact_embargoed: bool = False,
+) -> OSVDocument:
+    """Fully regenerate an OSV record from authoritative sources.
+
+    The existing record provides identity only: which vulnerability,
+    which package, and which version was fixed. Everything else is
+    regenerated through convert() using OSIDB/OSV/NVD/Jira.
+    """
+    m = _ID_PATTERN.match(record.id)
+    if not m:
+        logger.warning("Cannot parse ID %s — returning unchanged", record.id)
+        return record
+
+    vuln_id = m.group(1)
+    logger.info("Refreshing %s (%s)", record.id, vuln_id)
+
+    if not record.affected:
+        logger.warning("No affected entries in %s — returning unchanged", record.id)
+        return record
+
+    affected = record.affected[0]
+    pkg = affected.package
+    coordinates = pkg.name
+    parts = coordinates.split(":", 1)
+    if len(parts) != 2:
+        logger.warning("Cannot parse coordinates %s — returning unchanged", coordinates)
+        return record
+
+    group_id, artifact_id = parts
+
+    fixed_version = ""
+    for rng in affected.ranges:
+        for evt in rng.events:
+            if evt.fixed:
+                fixed_version = evt.fixed
+                break
+
+    if not fixed_version:
+        logger.warning("No fixed version in %s — returning unchanged", record.id)
+        return record
+
+    # Check OSIDB for the correct sub-artifact. Multi-module Maven builds
+    # often attribute CVEs to the wrong sub-module (e.g. spring-core when
+    # the fix is in spring-expression). OSIDB affects[].ps_component has
+    # the authoritative mapping.
+    if osidb_client and osidb_client.available:
+        flaw = osidb_client.get_flaw(vuln_id)
+        if flaw:
+            osidb_components = flaw.get("components", [])
+            if osidb_components and osidb_components[0] != artifact_id:
+                old_artifact = artifact_id
+                artifact_id = osidb_components[0]
+                logger.info(
+                    "OSIDB corrected sub-artifact: %s -> %s for %s",
+                    old_artifact,
+                    artifact_id,
+                    vuln_id,
+                )
+
+    base_ver = record.database_specific.lightwell.backport_base_version
+    if not base_ver:
+        base_ver = _base_version(fixed_version)
+
+    published = record.published or record.modified
+
+    from fath_cuan.models.input import InputDocument
+
+    synthetic_input = InputDocument.model_validate(
+        {
+            "buildId": "",
+            "created": published,
+            "vulns": [vuln_id],
+            "evidence": {
+                "additionalTags": [],
+                "digestRef": "",
+                "ref": "",
+            },
+            "gavCount": 1,
+            "gavIndexTag": "",
+            "gavs": [f"{group_id}:{artifact_id}:{fixed_version}"],
+            "primaryGav": f"{group_id}:{artifact_id}:{fixed_version}",
+            "upstreamVersion": base_ver if base_ver != _base_version(fixed_version) else None,
+        }
+    )
+
+    results = convert(
+        synthetic_input,
+        osidb_client=osidb_client,
+        jira_client=jira_client,
+        redact_embargoed=redact_embargoed,
+    )
+
+    if not results:
+        logger.warning("convert() produced no results for %s — returning unchanged", record.id)
+        return record
+
+    refreshed = results[0]
+    refreshed.published = published
+    return refreshed
