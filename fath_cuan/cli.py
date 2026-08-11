@@ -10,7 +10,7 @@ import fath_cuan
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
 from fath_cuan.jira.client import JiraClient
-from fath_cuan.workflow import process_osv, process_vex
+from fath_cuan.workflow import process_osv, process_vex, refresh_osv
 
 
 def _build_jira_client() -> JiraClient | None:
@@ -132,3 +132,102 @@ def process(
         else:
             path = write_to_file(vex_data, output_dir, "vex.json")
             click.echo(f"Wrote {path}")
+
+
+@main.command()
+@click.argument("input", required=True)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory for refreshed files (default: print to stdout).",
+)
+@click.option("--in-place", is_flag=True, help="Overwrite input file(s) in place.")
+@click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
+@click.option(
+    "--osidb-url",
+    default=None,
+    help="OSIDB base URL (default: env OSIDB_URL or production).",
+)
+@click.option("--jira", is_flag=True, help="Enrich from JIRA (requires JIRA_TOKEN).")
+@click.option(
+    "--redact-embargoed",
+    is_flag=True,
+    help="Redact embargoed OSIDB flaws to stubs (for public feeds).",
+)
+def refresh(
+    input: str,
+    output_dir: Path | None,
+    in_place: bool,
+    osidb: bool,
+    osidb_url: str | None,
+    jira: bool,
+    redact_embargoed: bool,
+) -> None:
+    """Refresh existing OSV file(s) from authoritative sources.
+
+    INPUT can be a single JSON file or a directory of JSON files.
+    Preserves the identity (vuln ID, package, fixed version) and
+    fully regenerates metadata from OSIDB/OSV/NVD/Jira.
+    """
+    input_path = Path(input)
+    if input_path.is_dir():
+        files = sorted(input_path.glob("*.json"))
+    elif input_path.is_file():
+        files = [input_path]
+    else:
+        click.echo(f"ERROR: {input} is not a file or directory", err=True)
+        raise SystemExit(1)
+
+    if not files:
+        click.echo("No JSON files found", err=True)
+        raise SystemExit(1)
+
+    osidb_client = None
+    if osidb:
+        from fath_cuan.osidb import OsidbClient
+
+        osidb_client = OsidbClient(base_url=osidb_url)
+        if osidb_client.available:
+            click.echo("OSIDB enrichment enabled")
+        else:
+            click.echo(
+                "WARNING: OSIDB unavailable — falling back to OSV/NVD",
+                err=True,
+            )
+            osidb_client = None
+
+    jira_client = None
+    if jira:
+        jira_client = _build_jira_client()
+        if jira_client is not None:
+            click.echo("JIRA enrichment enabled")
+        else:
+            click.echo(
+                "WARNING: JIRA unavailable — set JIRA_TOKEN to enable",
+                err=True,
+            )
+
+    click.echo(f"Refreshing {len(files)} file(s)...")
+
+    for f in files:
+        raw = read_input(str(f))
+        try:
+            result = refresh_osv(
+                raw,
+                osidb_client=osidb_client,
+                jira_client=jira_client,
+                redact_embargoed=redact_embargoed,
+            )
+        except Exception as e:
+            click.echo(f"  SKIP {f.name}: {e}", err=True)
+            continue
+
+        if in_place:
+            write_to_file(result, f.parent, f.name)
+            click.echo(f"  {f.name}: refreshed (in-place)")
+        elif output_dir:
+            path = write_to_file(result, output_dir, f.name)
+            click.echo(f"  {f.name}: refreshed -> {path}")
+        else:
+            write_to_stdout(result)

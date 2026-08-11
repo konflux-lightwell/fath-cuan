@@ -9,9 +9,11 @@ from fath_cuan.converters.osv import (
     _jira_severity,
     _parse_gav,
     convert,
+    refresh,
 )
 from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.input import InputDocument
+from fath_cuan.models.osv import OSVDocument
 from fath_cuan.osidb import OsidbClient
 from tests.conftest import (
     SAMPLE_DUPLICATE_CVE_DATA,
@@ -20,6 +22,8 @@ from tests.conftest import (
     SAMPLE_MIXED_VULN_DATA,
     SAMPLE_MULTI_CVE_DATA,
     SAMPLE_NOVEL_INPUT,
+    SAMPLE_NOVEL_OSV_RECORD,
+    SAMPLE_OSV_RECORD,
     SAMPLE_WITH_UPSTREAM_VERSION,
 )
 
@@ -744,3 +748,95 @@ def test_jira_severity_non_cvss_returns_empty() -> None:
 
 def test_jira_severity_empty_returns_empty() -> None:
     assert _jira_severity("") == []
+
+
+# ---------------------------------------------------------------------------
+# refresh()
+# ---------------------------------------------------------------------------
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_refresh_preserves_identity(mock_osv: object, mock_nvd: object) -> None:
+    record = OSVDocument.model_validate(SAMPLE_OSV_RECORD)
+    result = refresh(record)
+    assert result.id == "x_RHLW-CVE-2024-25710-1.0.0"
+    assert result.affected[0].package.name == "org.example:artifact"
+    events = result.affected[0].ranges[0].events
+    assert events[1].fixed == "1.0.0.rhlw-00001"
+    assert result.published == "2026-07-15T14:02:27Z"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_refresh_fixes_purl(mock_osv: object, mock_nvd: object) -> None:
+    record = OSVDocument.model_validate(SAMPLE_OSV_RECORD)
+    assert "@" not in (record.affected[0].package.purl or "")
+    result = refresh(record)
+    assert "@1.0.0.rhlw-00001" in (result.affected[0].package.purl or "")
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_refresh_enriches_from_upstream(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.return_value = {
+        "severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"},
+        ],
+        "summary": "Refreshed summary from upstream",
+        "details": "Refreshed details",
+        "aliases": ["GHSA-test", "CVE-2024-25710"],
+        "references": [
+            {"url": "https://nvd.nist.gov/vuln/detail/CVE-2024-25710", "type": "WEB"},
+        ],
+    }
+    record = OSVDocument.model_validate(SAMPLE_OSV_RECORD)
+    result = refresh(record)
+    assert result.summary == "Refreshed summary from upstream"
+    assert result.details == "Refreshed details"
+    assert len(result.severity) >= 1
+    assert "GHSA-test" in result.aliases
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_refresh_novel_with_osidb(mock_osv: object, mock_nvd: object) -> None:
+    osidb_response = {
+        "count": 1,
+        "results": [
+            {
+                "uuid": "test-uuid",
+                "vulnerability_id": "LW-2026-0468",
+                "cve_id": None,
+                "title": "OSIDB refreshed title",
+                "impact": "CRITICAL",
+                "source": "CUSTOMER",
+                "cwe_id": "CWE-835",
+                "cvss_scores": [
+                    {
+                        "cvss_version": "V3",
+                        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                        "score": 7.5,
+                    }
+                ],
+                "cve_description": "OSIDB description",
+                "comment_zero": "",
+                "references": [],
+                "affects": [],
+                "components": ["api-ldap-model"],
+                "embargoed": False,
+                "visibility": "PUBLIC",
+            }
+        ],
+    }
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=osidb_response):
+        record = OSVDocument.model_validate(SAMPLE_NOVEL_OSV_RECORD)
+        result = refresh(record, osidb_client=client)
+
+    assert result.summary == "OSIDB refreshed title"
+    assert result.severity[0].score == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+    assert result.database_specific.lightwell.lw_id == "LW-2026-0468"
+    assert result.database_specific.lightwell.vulnerability_class == "CWE-835"
+    assert result.database_specific.lightwell.source == "novel-pipeline"
+    mock_osv.assert_not_called()
