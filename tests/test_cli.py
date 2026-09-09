@@ -73,6 +73,32 @@ def test_cli_process_from_stdin(mock_osv: object, mock_nvd: object) -> None:
     assert result.exit_code == 0
 
 
+PYPI_BUILD_INDEX = {
+    "buildId": "pipeline-1",
+    "ecosystem": "pypi",
+    "version": {"upstream": "7.6.12", "full": "7.6.12+rhlw.1", "b": 1, "n": 0},
+    "purls": ["pkg:pypi/coverage@7.6.12%2Brhlw.1"],
+    "vulns": ["CVE-2024-25710"],
+    "created": "2026-07-15T14:02:27+00:00",
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_pypi_build_index_to_stdout(mock_osv: object, mock_nvd: object) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["process", "--stdout", "--format", "osv", "-"],
+        input=json.dumps(PYPI_BUILD_INDEX),
+    )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "x_RHLW-CVE-2024-25710-7.6.12"
+    assert data["affected"][0]["package"]["ecosystem"] == "PyPI"
+    assert data["affected"][0]["package"]["purl"] == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
+
+
 def test_cli_help() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["process", "--help"])

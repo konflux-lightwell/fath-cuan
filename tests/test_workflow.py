@@ -55,3 +55,28 @@ def test_process_osv_passes_jira_client(mock_jira: MagicMock) -> None:
 def test_process_vex_raises_not_implemented() -> None:
     with pytest.raises(NotImplementedError):
         process_vex(SAMPLE_INPUT_DATA)
+
+
+PYPI_BUILD_INDEX = {
+    "buildId": "pipeline-1",
+    "ecosystem": "pypi",
+    "version": {"upstream": "7.6.12", "full": "7.6.12+rhlw.1", "b": 1, "n": 0},
+    "purls": ["pkg:pypi/coverage@7.6.12%2Brhlw.1"],
+    "vulns": ["CVE-2024-25710"],
+    "created": "2026-07-15T14:02:27+00:00",
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_process_osv_dispatches_to_build_index(mock_osv: object, mock_nvd: object) -> None:
+    result = process_osv(PYPI_BUILD_INDEX)
+    assert len(result) == 1
+    assert result[0]["id"] == "x_RHLW-CVE-2024-25710-7.6.12"
+    assert result[0]["affected"][0]["package"]["ecosystem"] == "PyPI"
+    assert result[0]["affected"][0]["package"]["purl"] == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
+
+
+def test_process_vex_build_index_not_implemented() -> None:
+    with pytest.raises(NotImplementedError):
+        process_vex(PYPI_BUILD_INDEX)
