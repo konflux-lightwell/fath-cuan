@@ -281,6 +281,129 @@ class TestIndexMigrate:
         assert "Invalid GAV" in result.output
 
 
+class TestIndexCreateAttach:
+    def test_attach_pushes(self) -> None:
+        from tests.test_oci import FakeRegistry
+
+        reg = FakeRegistry()
+        runner = CliRunner()
+        with patch("fath_cuan.cli._build_registry", return_value=reg):
+            result = runner.invoke(
+                main,
+                [
+                    "index",
+                    "create",
+                    "--purl",
+                    "pkg:pypi/coverage@7.6.12",
+                    "--version-local",
+                    "7.6.12+rhlw.1",
+                    "--vuln",
+                    "CVE-2099-1",
+                    "--attach-to",
+                    "quay.io/example/img:tag",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert reg.push_count == 1
+        assert "Attached build-index" in result.output
+
+    def test_attach_deduplicates_on_second_run(self) -> None:
+        from tests.test_oci import FakeRegistry
+
+        reg = FakeRegistry()
+        runner = CliRunner()
+        args = [
+            "index",
+            "create",
+            "--purl",
+            "pkg:pypi/coverage@7.6.12",
+            "--version-local",
+            "7.6.12+rhlw.1",
+            "--vuln",
+            "CVE-2099-1",
+            "--attach-to",
+            "quay.io/example/img:tag",
+        ]
+        with patch("fath_cuan.cli._build_registry", return_value=reg):
+            first = runner.invoke(main, args)
+            second = runner.invoke(main, args)
+        assert first.exit_code == 0
+        assert second.exit_code == 0
+        assert reg.push_count == 1
+        assert "deduplicated" in second.output
+
+    def test_attach_conflict_fails(self) -> None:
+        from tests.test_oci import FakeRegistry
+
+        reg = FakeRegistry(
+            {("quay.io/example/img:tag", "application/vnd.lightwell.build-index.v1+json"): [b"{}"]}
+        )
+        runner = CliRunner()
+        with patch("fath_cuan.cli._build_registry", return_value=reg):
+            result = runner.invoke(
+                main,
+                [
+                    "index",
+                    "create",
+                    "--purl",
+                    "pkg:pypi/coverage@7.6.12",
+                    "--version-local",
+                    "7.6.12+rhlw.1",
+                    "--vuln",
+                    "CVE-2099-1",
+                    "--attach-to",
+                    "quay.io/example/img:tag",
+                ],
+            )
+        assert result.exit_code != 0
+        assert "divergent" in result.output
+
+
+class TestRefresh:
+    def _seed(self, build_index: dict) -> "object":
+        from tests.test_oci import FakeRegistry
+
+        return FakeRegistry(
+            {
+                ("quay.io/example/img:tag", "application/vnd.lightwell.build-index.v1+json"): [
+                    json.dumps(build_index).encode()
+                ]
+            }
+        )
+
+    @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+    @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+    def test_refresh_generates_osv(self, mock_osv: object, mock_nvd: object) -> None:
+        reg = self._seed(
+            {
+                "ecosystem": "maven",
+                "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001"},
+                "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
+                "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
+                "vulns": ["CVE-2024-25710"],
+                "created": "2026-07-15T14:02:27+00:00",
+            }
+        )
+        runner = CliRunner()
+        with patch("fath_cuan.cli._build_registry", return_value=reg):
+            result = runner.invoke(main, ["refresh", "quay.io/example/img:tag", "--stdout"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["id"] == "x_RHLW-CVE-2024-25710-1.0.0"
+        assert data["affected"][0]["package"]["purl"] == (
+            "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
+        )
+
+    def test_refresh_no_referrer_fails(self) -> None:
+        from tests.test_oci import FakeRegistry
+
+        runner = CliRunner()
+        with patch("fath_cuan.cli._build_registry", return_value=FakeRegistry()):
+            result = runner.invoke(main, ["refresh", "quay.io/example/img:tag", "--stdout"])
+        assert result.exit_code != 0
+        assert "no build-index referrer" in result.output
+
+
 class TestBuildJiraClient:
     def test_returns_none_without_token(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "JIRA_TOKEN"}
