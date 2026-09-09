@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 import fath_cuan
-from fath_cuan.index_builder import build_index_document
+from fath_cuan.index_builder import build_index_document, migrate_document
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
 from fath_cuan.jira.client import JiraClient
@@ -208,6 +208,29 @@ def index_create(
             build_id=build_id,
             require_vuln=require_vuln,
         )
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    payload = json.dumps(data, indent=2)
+    if output == "-":
+        click.echo(payload)
+    else:
+        Path(output).write_text(payload + "\n")
+        click.echo(f"Wrote {output}", err=True)
+
+
+@index.command("migrate")
+@click.option(
+    "--source-legacy-index",
+    required=True,
+    help="Legacy PNC gav-index.json path, or '-' for stdin.",
+)
+@click.option("--output", default="-", help="Output path, or '-' for stdout.")
+def index_migrate(source_legacy_index: str, output: str) -> None:
+    """Convert a legacy PNC gav-index into a unified build-index.json."""
+    raw = read_input(None if source_legacy_index == "-" else source_legacy_index)
+    try:
+        data = migrate_document(raw)
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 

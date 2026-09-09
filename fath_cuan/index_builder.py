@@ -19,6 +19,7 @@ from fath_cuan.ecosystems import (
 )
 from fath_cuan.gittrailers import ResolvedVulns, resolve_vulns
 from fath_cuan.models.build_index import BuildIndex
+from fath_cuan.models.input import InputDocument
 
 logger = logging.getLogger(__name__)
 
@@ -180,5 +181,43 @@ def build_index_document(
             "primaryPurl": coord.purl,
             "purls": [coord.purl],
             "vulns": resolved.vulns,
+        }
+    )
+
+
+def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:
+    """Convert a legacy PNC gav-index into a unified (Maven) build-index.
+
+    Converts ``primaryGav`` and every ``gavs[]`` entry into canonical
+    ``pkg:maven`` PURLs (primary first, de-duplicated), preserves ``vulns``
+    and the build's ``created`` timestamp so downstream OSV records are
+    unchanged, and records the primary's decomposed version. ``b``/``n`` are
+    set to 0 — the legacy format doesn't carry backport/novel counts.
+    """
+    doc = InputDocument.from_dict(gav_index)
+    primary = maven_coordinate(doc.primary_gav, doc.upstream_version)
+
+    purls = [primary.purl]
+    seen = {primary.purl}
+    for gav in doc.gavs:
+        purl = maven_coordinate(gav).purl
+        if purl not in seen:
+            seen.add(purl)
+            purls.append(purl)
+
+    return _finalize(
+        {
+            "buildId": doc.build_id,
+            "ecosystem": "maven",
+            "version": {
+                "upstream": primary.base_version,
+                "full": primary.version,
+                "b": 0,
+                "n": 0,
+            },
+            "primaryPurl": primary.purl,
+            "purls": purls,
+            "vulns": doc.vulns,
+            "created": doc.created,
         }
     )
