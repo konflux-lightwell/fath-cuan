@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import click
 
 import fath_cuan
+from fath_cuan.index_builder import build_index_document
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
 from fath_cuan.jira.client import JiraClient
@@ -139,3 +141,79 @@ def process(
             else:
                 path = write_to_file(vex_data, output_dir, "vex.json")
                 click.echo(f"Wrote {path}")
+
+
+@main.group()
+def index() -> None:
+    """Create and manage build-index metadata."""
+
+
+@index.command("create")
+@click.option(
+    "--ecosystem",
+    type=click.Choice(["pypi", "maven"]),
+    default=None,
+    help="Package ecosystem (inferred from --purl/--gav if omitted).",
+)
+@click.option("--purl", default=None, help="Package URL (mutually exclusive with --gav).")
+@click.option("--gav", default=None, help="Maven GAV (mutually exclusive with --purl).")
+@click.option("--version-upstream", default=None, help="Upstream base version (derived if unset).")
+@click.option(
+    "--version-local",
+    required=True,
+    help="Full remediated version — Maven e.g. '1.0.0.rhlw-00001', PyPI e.g. '1.0.0+rhlw.1'.",
+)
+@click.option("--b", "b_count", type=int, default=0, help="Backport count.")
+@click.option("--n", "n_count", type=int, default=0, help="Novel count.")
+@click.option("--vuln", "vulns", multiple=True, help="Vulnerability ID (repeatable).")
+@click.option(
+    "--git-dir",
+    type=click.Path(),
+    default=None,
+    help="Repo to inspect for vuln IDs when none are passed explicitly.",
+)
+@click.option("--build-id", default="", help="Build identifier to record in the index.")
+@click.option(
+    "--require-vuln",
+    is_flag=True,
+    help="Fail if no vuln IDs resolve (remediation build); default allows a clean build.",
+)
+@click.option("--output", default="-", help="Output path, or '-' for stdout.")
+def index_create(
+    ecosystem: str | None,
+    purl: str | None,
+    gav: str | None,
+    version_upstream: str | None,
+    version_local: str,
+    b_count: int,
+    n_count: int,
+    vulns: tuple[str, ...],
+    git_dir: str | None,
+    build_id: str,
+    require_vuln: bool,
+    output: str,
+) -> None:
+    """Create a build-index.json for a remediated build."""
+    try:
+        data = build_index_document(
+            version_local=version_local,
+            ecosystem=ecosystem,
+            purl=purl,
+            gav=gav,
+            version_upstream=version_upstream,
+            b=b_count,
+            n=n_count,
+            vulns=list(vulns),
+            git_dir=git_dir,
+            build_id=build_id,
+            require_vuln=require_vuln,
+        )
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+    payload = json.dumps(data, indent=2)
+    if output == "-":
+        click.echo(payload)
+    else:
+        Path(output).write_text(payload + "\n")
+        click.echo(f"Wrote {output}", err=True)
