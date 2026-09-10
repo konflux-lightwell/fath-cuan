@@ -136,6 +136,98 @@ def test_cli_help() -> None:
     assert "--format" in result.output
 
 
+class TestIndexCreate:
+    def test_pypi_to_stdout(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--purl",
+                "pkg:pypi/HuggingFace_Hub@7.6.12",
+                "--version-upstream",
+                "7.6.12",
+                "--version-local",
+                "7.6.12+rhlw.1",
+                "--b",
+                "1",
+                "--vuln",
+                "CVE-2024-1234",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["ecosystem"] == "pypi"
+        assert data["purls"] == ["pkg:pypi/huggingface-hub@7.6.12%2Brhlw.1"]
+        assert data["version"] == {"upstream": "7.6.12", "full": "7.6.12+rhlw.1", "b": 1, "n": 0}
+        assert data["vulns"] == ["CVE-2024-1234"]
+
+    def test_to_file(self, tmp_path: Path) -> None:
+        out = tmp_path / "build-index.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--gav",
+                "org.example:artifact:1.0.0",
+                "--version-local",
+                "1.0.0.rhlw-00001",
+                "--output",
+                str(out),
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(out.read_text())
+        assert data["purls"] == ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"]
+        assert data["vulns"] == []
+
+    def test_both_purl_and_gav_errors(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--purl",
+                "pkg:pypi/coverage@7.6.12",
+                "--gav",
+                "org.example:artifact:1.0.0",
+                "--version-local",
+                "7.6.12+rhlw.1",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "exactly one of" in result.output
+
+    def test_require_vuln_fails_when_empty(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--purl",
+                "pkg:pypi/coverage@7.6.12",
+                "--version-local",
+                "7.6.12+rhlw.1",
+                "--require-vuln",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "no vulnerability IDs resolved" in result.output
+
+    def test_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["index", "create", "--help"])
+        assert result.exit_code == 0
+        assert "--version-local" in result.output
+        assert "--purl" in result.output
+        assert "--require-vuln" in result.output
+
+
 class TestBuildJiraClient:
     def test_returns_none_without_token(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "JIRA_TOKEN"}
