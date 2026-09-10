@@ -240,3 +240,25 @@ def test_extract_introduced_substring_fallback_when_no_exact() -> None:
         ]
     }
     assert _extract_introduced(upstream, "org.springframework:spring-webmvc", "Maven") == "6.1.0"
+
+
+def test_extract_introduced_pypi_normalizes_both_sides() -> None:
+    # (12) upstream name in non-normalized form still matches our PEP503 coordinate.
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "Zope.Interface"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "5.0.0"}]}],
+            }
+        ]
+    }
+    assert _extract_introduced(upstream, "zope-interface", "PyPI") == "5.0.0"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_pypi_created_offset_converted_to_utc(mock_osv: object, mock_nvd: object) -> None:
+    # (14) a non-UTC producer timestamp is shifted to UTC, not relabelled.
+    bi = BuildIndex.from_dict({**PYPI_BUILD_INDEX, "created": "2026-07-15T14:02:27+05:30"})
+    results = convert_build_index(bi)
+    assert results[0].published == "2026-07-15T08:32:27Z"
