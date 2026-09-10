@@ -178,29 +178,45 @@ def _extract_references(upstream: dict[str, Any], cve_id: str) -> list[Reference
     return refs
 
 
+def _introduced_from_entry(affected: dict[str, Any]) -> str | None:
+    """Return the introduced version from an affected entry's ECOSYSTEM range."""
+    for r in affected.get("ranges", []):
+        if r.get("type") != "ECOSYSTEM":
+            continue
+        for e in r.get("events", []):
+            if "introduced" in e:
+                return str(e["introduced"])
+    return None
+
+
 def _extract_introduced(
     upstream: dict[str, Any], coordinates: str, osv_ecosystem: str = "Maven"
 ) -> str:
     """Extract the introduced version from upstream OSV ECOSYSTEM range.
 
     Searches the upstream affected entries for a package in the given OSV
-    ecosystem (e.g. "Maven", "PyPI") whose name matches ``coordinates`` and
-    returns the introduced version from its ECOSYSTEM range. Falls back to "0"
-    if no matching range is found.
+    ecosystem (e.g. "Maven", "PyPI") whose name matches ``coordinates``. An
+    **exact** name match is preferred across all entries; only if none exists
+    does it fall back to a substring match. This avoids single-token PyPI names
+    (e.g. ``requests`` vs ``requests-oauthlib``) picking the wrong advisory
+    entry based on ordering. Falls back to "0" if no match yields an
+    introduced version.
     """
-    for a in upstream.get("affected", []):
-        pkg = a.get("package", {})
-        if pkg.get("ecosystem") != osv_ecosystem:
-            continue
-        upstream_name = pkg.get("name", "")
-        if upstream_name != coordinates and coordinates not in upstream_name:
-            continue
-        for r in a.get("ranges", []):
-            if r.get("type") != "ECOSYSTEM":
-                continue
-            for e in r.get("events", []):
-                if "introduced" in e:
-                    return str(e["introduced"])
+    entries = [
+        a
+        for a in upstream.get("affected", [])
+        if a.get("package", {}).get("ecosystem") == osv_ecosystem
+    ]
+    for a in entries:  # exact match first
+        if a.get("package", {}).get("name", "") == coordinates:
+            v = _introduced_from_entry(a)
+            if v is not None:
+                return v
+    for a in entries:  # substring fallback
+        if coordinates in a.get("package", {}).get("name", ""):
+            v = _introduced_from_entry(a)
+            if v is not None:
+                return v
     return "0"
 
 

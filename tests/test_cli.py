@@ -99,6 +99,34 @@ def test_cli_process_pypi_build_index_to_stdout(mock_osv: object, mock_nvd: obje
     assert data["affected"][0]["package"]["purl"] == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
 
 
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_all_skips_vex_with_warning(
+    mock_osv: object, mock_nvd: object, tmp_path: Path
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["process", "--output-dir", str(tmp_path), "-"],  # default --format all
+        input=json.dumps(SAMPLE_INPUT_DATA),
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "x_RHLW-CVE-2024-25710-1.0.0.json").exists()
+    assert not (tmp_path / "vex.json").exists()
+    assert "skipping VEX" in result.output
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_cli_process_format_vex_fails_cleanly(mock_osv: object, mock_nvd: object) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["process", "--format", "vex", "--stdout", "-"], input=json.dumps(SAMPLE_INPUT_DATA)
+    )
+    assert result.exit_code != 0
+    assert "not yet implemented" in result.output.lower()
+
+
 def test_cli_help() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["process", "--help"])

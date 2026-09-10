@@ -89,3 +89,29 @@ def test_primary_purl_explicit_preserved() -> None:
 def test_model_dump_includes_primary_purl() -> None:
     data = BuildIndex.from_dict(VALID_PYPI).model_dump(by_alias=True)
     assert data["primaryPurl"] == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
+
+
+def test_primary_purl_must_match_version_full() -> None:
+    payload = {
+        **VALID_PYPI,
+        "version": {"upstream": "7.6.12", "full": "7.6.12+rhlw.1"},
+        "primaryPurl": "pkg:pypi/coverage@7.6.12",  # base, not the full remediated version
+        "purls": ["pkg:pypi/coverage@7.6.12"],
+    }
+    with pytest.raises(ValueError, match="does not match"):
+        BuildIndex.from_dict(payload)
+
+
+def test_primary_purl_matching_full_ok() -> None:
+    bi = BuildIndex.from_dict(VALID_PYPI)  # full 7.6.12+rhlw.1, purl %2Brhlw.1
+    assert bi.version.full == "7.6.12+rhlw.1"
+
+
+def test_no_full_skips_match_check() -> None:
+    payload = {
+        **VALID_PYPI,
+        "version": {"upstream": "7.6.12"},
+        "primaryPurl": "pkg:pypi/coverage@7.6.12",
+        "purls": ["pkg:pypi/coverage@7.6.12"],
+    }
+    assert BuildIndex.from_dict(payload).version.full is None
