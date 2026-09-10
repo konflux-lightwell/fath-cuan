@@ -211,3 +211,32 @@ def test_convert_uses_primary_purl_not_first_of_purls(mock_osv: object, mock_nvd
     results = convert_build_index(bi)
     assert results[0].affected[0].package.purl == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
     assert results[0].affected[0].package.name == "coverage"
+
+
+def test_extract_introduced_prefers_exact_over_substring() -> None:
+    """PyPI single-token collision: exact 'requests' must win over 'requests-oauthlib'."""
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "requests-oauthlib"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0.1.0"}]}],
+            },
+            {
+                "package": {"ecosystem": "PyPI", "name": "requests"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2.0.0"}]}],
+            },
+        ]
+    }
+    assert _extract_introduced(upstream, "requests", "PyPI") == "2.0.0"
+
+
+def test_extract_introduced_substring_fallback_when_no_exact() -> None:
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.springframework:spring-webmvc"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "6.1.0"}]}],
+            },
+        ]
+    }
+    assert _extract_introduced(upstream, "org.springframework:spring-webmvc", "Maven") == "6.1.0"

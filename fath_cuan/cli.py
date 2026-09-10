@@ -126,9 +126,16 @@ def process(
                 click.echo(f"Wrote {path}")
 
     if output_format in ("vex", "all"):
-        vex_data = process_vex(raw)
-        if use_stdout:
-            write_to_stdout(vex_data)
+        try:
+            vex_data = process_vex(raw)
+        except NotImplementedError as e:
+            if output_format == "all":
+                click.echo(f"WARNING: skipping VEX — {e}", err=True)
+            else:
+                raise click.ClickException(str(e)) from e
         else:
-            path = write_to_file(vex_data, output_dir, "vex.json")
-            click.echo(f"Wrote {path}")
+            if use_stdout:
+                write_to_stdout(vex_data)
+            else:
+                path = write_to_file(vex_data, output_dir, "vex.json")
+                click.echo(f"Wrote {path}")

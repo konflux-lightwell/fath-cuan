@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from fath_cuan.ecosystems import SUPPORTED_ECOSYSTEMS
+from fath_cuan.ecosystems import SUPPORTED_ECOSYSTEMS, parse_purl
 
 
 class VersionInfo(BaseModel):
@@ -39,6 +39,9 @@ class BuildIndex(BaseModel):
     build_id: str = Field(default="", alias="buildId")
     ecosystem: str
     version: VersionInfo
+    # primaryPurl is authoritative for the remediated coordinate: OSV generation
+    # takes the affected package (name + fixed version) from it, so its version
+    # MUST equal version.full when that is set (validated below).
     primary_purl: str = Field(alias="primaryPurl")
     purls: list[str]
     vulns: list[str] = Field(default_factory=list)
@@ -78,6 +81,27 @@ class BuildIndex(BaseModel):
         if not value:
             raise ValueError("build-index must contain at least one purl")
         return value
+
+    @model_validator(mode="after")
+    def _primary_purl_matches_full(self) -> BuildIndex:
+        """primaryPurl must carry the remediated (full) version.
+
+        OSV generation reads the fixed version from primaryPurl, so a producer
+        that points primaryPurl at the upstream coordinate while carrying the
+        remediated version in version.full would silently emit an advisory whose
+        fix is the base version. Fail loudly instead.
+        """
+        if self.version.full:
+            try:
+                _, _, purl_version = parse_purl(self.primary_purl)
+            except ValueError:
+                return self  # malformed PURL surfaces where it's resolved
+            if purl_version != self.version.full:
+                raise ValueError(
+                    f"primaryPurl version '{purl_version}' does not match "
+                    f"version.full '{self.version.full}'"
+                )
+        return self
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> BuildIndex:
