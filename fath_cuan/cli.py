@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -12,7 +13,44 @@ from fath_cuan.index_builder import build_index_document, migrate_document
 from fath_cuan.io.reader import read_input
 from fath_cuan.io.writer import write_to_file, write_to_stdout
 from fath_cuan.jira.client import JiraClient
+from fath_cuan.oci import OciError, Registry, attach_build_index, fetch_build_index
 from fath_cuan.workflow import process_osv, process_vex
+
+
+def _build_registry() -> Registry:
+    """Construct the OCI registry client (patch point for tests)."""
+    from fath_cuan.oci_oras import OrasRegistry
+
+    return OrasRegistry()
+
+
+def _canonical_index_bytes(data: dict[str, Any]) -> bytes:
+    """Deterministic build-index serialization for a stable referrer digest."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _emit_index(data: dict[str, Any], output: str, attach_to: str | None) -> None:
+    """Write/echo a build-index and, if requested, attach it as an OCI referrer.
+
+    The document is always emitted (stdout or file) even when ``--attach-to`` is
+    given — attaching is additive, not a replacement for producing the file.
+    """
+    payload = json.dumps(data, indent=2)
+    if output == "-":
+        click.echo(payload)
+    else:
+        Path(output).write_text(payload + "\n")
+        click.echo(f"Wrote {output}", err=True)
+
+    if attach_to:
+        try:
+            result = attach_build_index(_build_registry(), attach_to, _canonical_index_bytes(data))
+        except OciError as e:
+            raise click.ClickException(str(e)) from e
+        if result.deduplicated:
+            click.echo(f"Build-index already attached to {attach_to} (deduplicated)", err=True)
+        else:
+            click.echo(f"Attached build-index to {attach_to} ({result.referrer_digest})", err=True)
 
 
 def _build_jira_client() -> JiraClient | None:
@@ -143,6 +181,68 @@ def process(
                 click.echo(f"Wrote {path}")
 
 
+@main.command()
+@click.argument("image_ref")
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=Path("."),
+    help="Directory for output files.",
+)
+@click.option("--stdout", "use_stdout", is_flag=True, help="Print output to stdout.")
+@click.option("--jira", is_flag=True, help="Enrich from JIRA (requires JIRA_TOKEN).")
+@click.option("--osidb", is_flag=True, help="Enrich from OSIDB (requires Kerberos or OSIDB_TOKEN).")
+@click.option("--osidb-url", default=None, help="OSIDB base URL (default: env or production).")
+@click.option(
+    "--redact-embargoed",
+    is_flag=True,
+    help="Redact embargoed OSIDB flaws to stubs (for public feeds).",
+)
+def refresh(
+    image_ref: str,
+    output_dir: Path,
+    use_stdout: bool,
+    jira: bool,
+    osidb: bool,
+    osidb_url: str | None,
+    redact_embargoed: bool,
+) -> None:
+    """Generate OSV records from the build-index attached to IMAGE_REF."""
+    try:
+        raw = fetch_build_index(_build_registry(), image_ref)
+    except OciError as e:
+        raise click.ClickException(str(e)) from e
+    if raw is None:
+        raise click.ClickException(f"no build-index referrer attached to {image_ref}")
+
+    osidb_client = None
+    if osidb:
+        from fath_cuan.osidb import OsidbClient
+
+        osidb_client = OsidbClient(base_url=osidb_url)
+        if not osidb_client.available:
+            click.echo("WARNING: OSIDB unavailable — falling back to OSV/NVD", err=True)
+
+    jira_client = None
+    if jira:
+        jira_client = _build_jira_client()
+        if jira_client is None:
+            click.echo("WARNING: JIRA unavailable — set JIRA_TOKEN to enable", err=True)
+
+    osv_records = process_osv(
+        raw,
+        osidb_client=osidb_client,
+        jira_client=jira_client,
+        redact_embargoed=redact_embargoed,
+    )
+    for record in osv_records:
+        if use_stdout:
+            write_to_stdout(record)
+        else:
+            path = write_to_file(record, output_dir, f"{record['id']}.json")
+            click.echo(f"Wrote {path}")
+
+
 @main.group()
 def index() -> None:
     """Create and manage build-index metadata."""
@@ -178,6 +278,11 @@ def index() -> None:
     is_flag=True,
     help="Fail if no vuln IDs resolve (remediation build); default allows a clean build.",
 )
+@click.option(
+    "--attach-to",
+    default=None,
+    help="Image reference to attach the build-index to as an OCI referrer.",
+)
 @click.option("--output", default="-", help="Output path, or '-' for stdout.")
 def index_create(
     ecosystem: str | None,
@@ -191,6 +296,7 @@ def index_create(
     git_dir: str | None,
     build_id: str,
     require_vuln: bool,
+    attach_to: str | None,
     output: str,
 ) -> None:
     """Create a build-index.json for a remediated build."""
@@ -211,12 +317,7 @@ def index_create(
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
-    payload = json.dumps(data, indent=2)
-    if output == "-":
-        click.echo(payload)
-    else:
-        Path(output).write_text(payload + "\n")
-        click.echo(f"Wrote {output}", err=True)
+    _emit_index(data, output, attach_to)
 
 
 @index.command("migrate")
@@ -225,8 +326,13 @@ def index_create(
     required=True,
     help="Legacy PNC gav-index.json path, or '-' for stdin.",
 )
+@click.option(
+    "--attach-to",
+    default=None,
+    help="Image reference to attach the migrated build-index to as an OCI referrer.",
+)
 @click.option("--output", default="-", help="Output path, or '-' for stdout.")
-def index_migrate(source_legacy_index: str, output: str) -> None:
+def index_migrate(source_legacy_index: str, attach_to: str | None, output: str) -> None:
     """Convert a legacy PNC gav-index into a unified build-index.json."""
     raw = read_input(None if source_legacy_index == "-" else source_legacy_index)
     if not isinstance(raw, dict) or "primaryGav" not in raw:
@@ -242,9 +348,4 @@ def index_migrate(source_legacy_index: str, output: str) -> None:
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
-    payload = json.dumps(data, indent=2)
-    if output == "-":
-        click.echo(payload)
-    else:
-        Path(output).write_text(payload + "\n")
-        click.echo(f"Wrote {output}", err=True)
+    _emit_index(data, output, attach_to)
