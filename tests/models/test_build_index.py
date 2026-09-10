@@ -115,3 +115,36 @@ def test_no_full_skips_match_check() -> None:
         "purls": ["pkg:pypi/coverage@7.6.12"],
     }
     assert BuildIndex.from_dict(payload).version.full is None
+
+
+def test_remediation_without_full_rejected() -> None:
+    with pytest.raises(ValueError, match=r"version\.full distinct"):
+        BuildIndex.from_dict(
+            {
+                "ecosystem": "pypi",
+                "version": {"upstream": "7.6.12", "b": 1},
+                "primaryPurl": "pkg:pypi/coverage@7.6.12",
+                "purls": ["pkg:pypi/coverage@7.6.12"],
+                "vulns": ["CVE-2024-25710"],
+            }
+        )
+
+
+def test_remediation_full_equals_upstream_rejected() -> None:
+    with pytest.raises(ValueError, match=r"version\.full distinct"):
+        BuildIndex.from_dict(
+            {
+                "ecosystem": "pypi",
+                "version": {"upstream": "7.6.12", "full": "7.6.12", "b": 2, "n": 1},
+                "primaryPurl": "pkg:pypi/coverage@7.6.12",
+                "purls": ["pkg:pypi/coverage@7.6.12"],
+                "vulns": ["CVE-2024-25710"],
+            }
+        )
+
+
+def test_negative_counts_rejected() -> None:
+    with pytest.raises(ValueError):
+        BuildIndex.from_dict(
+            {**VALID_PYPI, "version": {"upstream": "7.6.12", "full": "7.6.12+rhlw.1", "b": -1}}
+        )

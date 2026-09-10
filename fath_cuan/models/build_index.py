@@ -27,8 +27,8 @@ class VersionInfo(BaseModel):
 
     upstream: str
     full: str | None = None
-    b: int = 0
-    n: int = 0
+    b: int = Field(default=0, ge=0)
+    n: int = Field(default=0, ge=0)
 
 
 class BuildIndex(BaseModel):
@@ -101,6 +101,26 @@ class BuildIndex(BaseModel):
                     f"primaryPurl version '{purl_version}' does not match "
                     f"version.full '{self.version.full}'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _remediation_carries_remediated_version(self) -> BuildIndex:
+        """A remediation build must carry a full version distinct from upstream.
+
+        Enforced at the schema boundary so every ecosystem and every producer
+        (index create, index migrate, external tools) is covered at once: if the
+        build declares itself a remediation (``b`` or ``n`` > 0) it must have a
+        ``version.full`` that differs from ``version.upstream`` — otherwise the
+        OSV ``fixed`` event equals the vulnerable version, which a scanner reads
+        as "no fix exists".
+        """
+        if (self.version.b or self.version.n) and (
+            not self.version.full or self.version.full == self.version.upstream
+        ):
+            raise ValueError(
+                f"remediation build (b={self.version.b}, n={self.version.n}) must carry a "
+                f"version.full distinct from version.upstream ('{self.version.upstream}')"
+            )
         return self
 
     @classmethod

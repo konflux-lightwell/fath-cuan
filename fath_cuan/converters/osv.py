@@ -13,6 +13,7 @@ from fath_cuan.ecosystems import (
     maven_base_version,
     maven_coordinate,
     parse_gav,
+    pep503_normalize,
 )
 from fath_cuan.jira.client import JiraClient
 from fath_cuan.jira.models import VulnerabilityData
@@ -199,21 +200,31 @@ def _extract_introduced(
     **exact** name match is preferred across all entries; only if none exists
     does it fall back to a substring match. This avoids single-token PyPI names
     (e.g. ``requests`` vs ``requests-oauthlib``) picking the wrong advisory
-    entry based on ordering. Falls back to "0" if no match yields an
-    introduced version.
+    entry based on ordering.
+
+    For PyPI, both sides are PEP 503-normalized before comparison, so an
+    upstream name in any casing/separator form (``Coverage``, ``zope.interface``)
+    still matches our already-normalized coordinate — otherwise the lookup would
+    silently miss and emit an over-broad ``introduced: "0"``. Falls back to "0"
+    if no match yields an introduced version.
     """
+
+    def _norm(name: str) -> str:
+        return pep503_normalize(name) if osv_ecosystem == "PyPI" else name
+
+    target = _norm(coordinates)
     entries = [
         a
         for a in upstream.get("affected", [])
         if a.get("package", {}).get("ecosystem") == osv_ecosystem
     ]
     for a in entries:  # exact match first
-        if a.get("package", {}).get("name", "") == coordinates:
+        if _norm(a.get("package", {}).get("name", "")) == target:
             v = _introduced_from_entry(a)
             if v is not None:
                 return v
     for a in entries:  # substring fallback
-        if coordinates in a.get("package", {}).get("name", ""):
+        if target in _norm(a.get("package", {}).get("name", "")):
             v = _introduced_from_entry(a)
             if v is not None:
                 return v
@@ -366,7 +377,11 @@ def _build_records(
     osv_ecosystem = coord.osv_ecosystem
     logger.debug("Converting %s (%s) with %d vulns", coordinates, version, len(vulns))
 
-    published = created.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Convert to UTC before stamping the trailing 'Z' — a producer-supplied
+    # non-UTC offset must be shifted, not silently relabelled as UTC. Treat a
+    # naive datetime as already-UTC.
+    created_utc = created if created.tzinfo else created.replace(tzinfo=UTC)
+    published = created_utc.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
 
     records: list[OSVDocument] = []
