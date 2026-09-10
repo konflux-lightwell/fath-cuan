@@ -130,3 +130,34 @@ def test_resolve_tier2_placeholder_falls_through_to_tier3() -> None:
     )
     assert r.vulns == ["CVE-2024-4444"]
     assert r.tier == "standard-trailer"
+
+
+def test_resolve_tier1_filters_junk() -> None:
+    r = resolve_vulns(["TBD", "CVE-2024-0001", "not-a-vuln"])
+    assert r.vulns == ["CVE-2024-0001"]
+    assert r.tier == "cli"
+
+
+def test_resolve_tier1_all_junk_is_empty_cli() -> None:
+    # junk explicit -> empty (surfaces via require-vuln), does not fall through to git
+    r = resolve_vulns(
+        ["TBD", "none"],
+        git_dir="/repo",
+        commit_message_reader=lambda _: "Resolves: CVE-2024-9999",
+        recent_log_reader=lambda _: "",
+    )
+    assert r.vulns == []
+    assert r.tier == "cli"
+
+
+def test_resolve_env_filters_junk() -> None:
+    r = resolve_vulns([], env_value="TBD CVE-2024-0002 garbage")
+    assert r.vulns == ["CVE-2024-0002"]
+    assert r.tier == "env"
+
+
+def test_parse_adr0005_one_id_per_line() -> None:
+    # a fix line names one flaw; a stray second id on the line is not double-counted
+    assert parse_adr0005_trailers("Lightwell-Fix: cve=CVE-2024-1111 CVE-2024-2222") == [
+        "CVE-2024-1111"
+    ]
