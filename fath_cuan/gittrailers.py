@@ -83,11 +83,12 @@ def parse_adr0005_trailers(text: str) -> list[str]:
             if "=" in pair:
                 key, value = pair.split("=", 1)
                 fields[key.strip().lower()] = value.strip()
-        # Prefer cve, fall back to fix; take the first that contains a valid ID.
+        # Prefer cve, fall back to fix; one identifier per fix line (the cve or
+        # fix names the same underlying flaw — emitting both would double-count).
         for candidate in (fields.get("cve"), fields.get("fix")):
             found = _VULN_RE.findall(candidate) if candidate else []
             if found:
-                vulns.extend(found)
+                vulns.append(found[0])
                 break
     return _dedup(vulns)
 
@@ -110,7 +111,10 @@ def regex_scan(text: str) -> list[str]:
 def _parse_env(value: str | None) -> list[str]:
     if not value:
         return []
-    return _dedup(_ENV_SPLIT_RE.split(value.strip()))
+    # Validate through _VULN_RE like every other tier, so a placeholder such as
+    # VULN_IDS='TBD none' (or an unexpanded CI variable) can't satisfy
+    # --require-vuln with junk that then becomes a published advisory id.
+    return _dedup(m for tok in _ENV_SPLIT_RE.split(value.strip()) for m in _VULN_RE.findall(tok))
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +171,15 @@ def resolve_vulns(
     real repository.
     """
     if explicit:
-        return ResolvedVulns(_dedup(explicit), "cli")
+        # Validate explicit --vuln through _VULN_RE like every other tier, so
+        # junk (`--vuln TBD`) can't satisfy --require-vuln and ship as an
+        # advisory id. Returned as "cli" even if filtering empties it, so junk
+        # surfaces via the require-vuln check rather than falling through to git.
+        valid = _dedup(m for tok in explicit for m in _VULN_RE.findall(tok))
+        return ResolvedVulns(valid, "cli")
 
-    env_vulns = _parse_env(env_value)
-    if env_vulns:
-        return ResolvedVulns(env_vulns, "env")
+    if env_value and env_value.strip():
+        return ResolvedVulns(_parse_env(env_value), "env")
 
     if git_dir:
         message = commit_message_reader(git_dir)
