@@ -21,12 +21,15 @@ class InputDocument(BaseModel):
     build_id: str = Field(alias="buildId")
     created: datetime
     vulns: list[str]
-    evidence: Evidence
-    gav_count: int = Field(alias="gavCount")
-    gav_index_tag: str = Field(alias="gavIndexTag")
-    gavs: list[str]
     primary_gav: str = Field(alias="primaryGav")
     upstream_version: str | None = Field(default=None, alias="upstreamVersion")
+    # Optional: consumed by neither the OSV converter nor `index migrate`, so a
+    # trimmed legacy index (lacking these) still migrates rather than failing
+    # validation on fields the code is about to discard.
+    evidence: Evidence | None = None
+    gav_count: int = Field(default=0, alias="gavCount")
+    gav_index_tag: str = Field(default="", alias="gavIndexTag")
+    gavs: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InputDocument:

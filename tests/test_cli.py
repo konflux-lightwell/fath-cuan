@@ -228,6 +228,59 @@ class TestIndexCreate:
         assert "--require-vuln" in result.output
 
 
+class TestIndexMigrate:
+    def test_from_stdin_to_stdout(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["index", "migrate", "--source-legacy-index", "-"],
+            input=json.dumps(SAMPLE_INPUT_DATA),
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["ecosystem"] == "maven"
+        assert data["purls"] == ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"]
+        assert data["vulns"] == ["CVE-2024-25710"]
+
+    def test_to_file(self, tmp_path: Path) -> None:
+        src = tmp_path / "gav-index.json"
+        src.write_text(json.dumps(SAMPLE_INPUT_DATA))
+        out = tmp_path / "build-index.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["index", "migrate", "--source-legacy-index", str(src), "--output", str(out)],
+        )
+        assert result.exit_code == 0
+        data = json.loads(out.read_text())
+        assert data["purls"][0] == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
+
+    def test_rejects_non_gav_index(self) -> None:
+        # a build-index (no primaryGav) fed to migrate -> clean error, no pydantic dump
+        runner = CliRunner()
+        bi = {
+            "ecosystem": "maven",
+            "version": {"upstream": "1.0.0"},
+            "purls": ["pkg:maven/g/a@1.0.0"],
+        }
+        result = runner.invoke(
+            main, ["index", "migrate", "--source-legacy-index", "-"], input=json.dumps(bi)
+        )
+        assert result.exit_code != 0
+        assert "not a legacy PNC gav-index" in result.output
+
+    def test_invalid_gav_errors(self) -> None:
+        bad = {**SAMPLE_INPUT_DATA, "primaryGav": "notagav"}
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["index", "migrate", "--source-legacy-index", "-"],
+            input=json.dumps(bad),
+        )
+        assert result.exit_code != 0
+        assert "Invalid GAV" in result.output
+
+
 class TestBuildJiraClient:
     def test_returns_none_without_token(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "JIRA_TOKEN"}

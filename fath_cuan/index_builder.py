@@ -19,6 +19,7 @@ from fath_cuan.ecosystems import (
 )
 from fath_cuan.gittrailers import ResolvedVulns, resolve_vulns
 from fath_cuan.models.build_index import BuildIndex
+from fath_cuan.models.input import InputDocument
 
 logger = logging.getLogger(__name__)
 
@@ -180,5 +181,54 @@ def build_index_document(
             "primaryPurl": coord.purl,
             "purls": [coord.purl],
             "vulns": resolved.vulns,
+        }
+    )
+
+
+def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:
+    """Convert a legacy PNC gav-index into a unified (Maven) build-index.
+
+    Converts ``primaryGav`` and every ``gavs[]`` entry into canonical
+    ``pkg:maven`` PURLs (primary first, de-duplicated), preserves ``vulns``
+    and the build's ``created`` timestamp so downstream OSV records are
+    unchanged, and records the primary's decomposed version.
+
+    ``b``/``n`` are derived from the vuln IDs: ADR-0005 backports carry ``CVE-``
+    IDs and novel fixes carry ``LW-`` IDs. This is a heuristic (a novel fix that
+    later gets a CVE assigned would land in the backport bucket), but it is
+    strictly better than asserting 0/0, which would make every migrated build
+    look like a non-remediation to consumers filtering on ``b + n > 0``. It also
+    means a legacy index whose ``primaryGav`` lacks the ``.rhlw-`` qualifier is
+    caught by the BuildIndex remediation guard rather than silently emitting an
+    advisory whose fix is its own vulnerable version.
+    """
+    doc = InputDocument.from_dict(gav_index)
+    primary = maven_coordinate(doc.primary_gav, doc.upstream_version)
+
+    purls = [primary.purl]
+    seen = {primary.purl}
+    for gav in doc.gavs:
+        purl = maven_coordinate(gav).purl
+        if purl not in seen:
+            seen.add(purl)
+            purls.append(purl)
+
+    b = sum(1 for v in doc.vulns if v.startswith("CVE-"))
+    n = sum(1 for v in doc.vulns if v.startswith("LW-"))
+
+    return _finalize(
+        {
+            "buildId": doc.build_id,
+            "ecosystem": "maven",
+            "version": {
+                "upstream": primary.base_version,
+                "full": primary.version,
+                "b": b,
+                "n": n,
+            },
+            "primaryPurl": primary.purl,
+            "purls": purls,
+            "vulns": doc.vulns,
+            "created": doc.created,
         }
     )
