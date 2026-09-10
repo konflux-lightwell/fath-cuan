@@ -5,10 +5,14 @@ an optional dependency — install with ``pip install 'fath-cuan[oci]'``. The
 import is lazy, so nothing here is loaded unless an OCI operation is requested.
 
 The registry-protocol network paths (Referrers API discovery, referrer push
-with a digest-qualified subject) implement the standard OCI referrers flow but
-have not been validated against a live registry — treat them as the integration
-surface to exercise once a target registry/credentials are wired up. All policy
-(dedup, conflict handling) lives in :mod:`fath_cuan.oci` and is fully tested.
+with a digest-qualified subject) implement the standard OCI referrers flow.
+They have not yet been exercised against a live registry — that's the remaining
+integration surface — but the known correctness issues from review are handled:
+the push carries a real ``oras.oci.Subject`` and sets the referrer's
+``artifactType`` (via the config mediaType, per the dist-spec fallback) so the
+referrers list is filterable; the read path loads registry credentials and
+guards every response status. All policy (dedup, conflict handling) lives in
+:mod:`fath_cuan.oci` and is fully tested.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ _MANIFEST_ACCEPT = ", ".join(
     ]
 )
 _REFERRERS_ACCEPT = "application/vnd.oci.image.index.v1+json"
+_DEFAULT_SUBJECT_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 
 
 def _tag_safe(digest: str) -> str:
@@ -57,29 +62,60 @@ class OrasRegistry:
             self._client = OrasClient()
         return self._client
 
-    def _manifest_base(self, image_ref: str) -> str:
+    def _container(self, image_ref: str) -> Any:
+        """Resolve a container and load registry credentials for do_request calls.
+
+        ``push()`` loads ``~/.docker/config.json`` internally, but ``do_request``
+        (used by the read path) does not — so without this the HEAD/GET requests
+        go out anonymously and fail on private registries with 401/403.
+        """
         client = self._c()
         container = client.get_container(image_ref)
-        return f"{client.prefix}://{container.manifest_url()}"
+        try:
+            client.auth.load_configs(container)
+        except Exception as e:  # pragma: no cover - best-effort, anon fallback
+            logger.debug("load_configs failed (continuing anonymously): %s", e)
+        return container
+
+    def _manifest_base(self, container: Any) -> str:
+        return f"{self._c().prefix}://{container.manifest_url()}"
 
     @staticmethod
     def _root(manifest_base: str) -> str:
         # Strip the trailing "/manifests/<ref>" to get the repo API root.
         return manifest_base.rsplit("/manifests/", 1)[0]
 
-    def _subject_digest(self, manifest_base: str) -> str:
+    @staticmethod
+    def _repo_ref(root: str) -> str:
+        """Derive ``registry/repo`` from the repo API root (handles no-namespace refs)."""
+        # root == "{scheme}://{registry}/v2/{repo/path}"
+        return root.split("://", 1)[-1].replace("/v2/", "/", 1)
+
+    def _subject_descriptor(self, container: Any) -> dict[str, Any]:
+        """HEAD the subject manifest → an OCI descriptor {mediaType, digest, size}."""
         client = self._c()
-        resp = client.do_request(manifest_base, "HEAD", headers={"Accept": _MANIFEST_ACCEPT})
+        base = self._manifest_base(container)
+        resp = client.do_request(base, "HEAD", headers={"Accept": _MANIFEST_ACCEPT})
+        if resp.status_code >= 400:
+            raise OciError(f"could not resolve subject for {base} ({resp.status_code})")
         digest = resp.headers.get("Docker-Content-Digest")
         if not digest:
-            raise OciError(f"could not resolve subject digest for {manifest_base}")
-        return str(digest)
+            raise OciError(f"could not resolve subject digest for {base}")
+        try:
+            size = int(resp.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            size = 0
+        return {
+            "mediaType": resp.headers.get("Content-Type") or _DEFAULT_SUBJECT_MEDIA_TYPE,
+            "digest": str(digest),
+            "size": size,
+        }
 
     def list_referrer_payloads(self, image_ref: str, artifact_type: str) -> list[bytes]:
         client = self._c()
-        base = self._manifest_base(image_ref)
-        root = self._root(base)
-        subject_digest = self._subject_digest(base)
+        container = self._container(image_ref)
+        root = self._root(self._manifest_base(container))
+        subject_digest = self._subject_descriptor(container)["digest"]
 
         resp = client.do_request(
             f"{root}/referrers/{subject_digest}",
@@ -92,9 +128,8 @@ class OrasRegistry:
         if resp.status_code >= 400:
             raise OciError(f"referrers query failed ({resp.status_code}) for {image_ref}")
 
-        manifests = resp.json().get("manifests", [])
         payloads: list[bytes] = []
-        for desc in manifests:
+        for desc in resp.json().get("manifests", []):
             if desc.get("artifactType") != artifact_type:
                 continue
             payloads.append(self._fetch_payload(root, desc["digest"], artifact_type))
@@ -107,43 +142,58 @@ class OrasRegistry:
             "GET",
             headers={"Accept": _MANIFEST_ACCEPT},
         )
+        if resp.status_code >= 400:
+            raise OciError(
+                f"failed to fetch referrer manifest {referrer_digest} ({resp.status_code})"
+            )
         layers = resp.json().get("layers", [])
-        blob_digest = None
-        for layer in layers:
-            if layer.get("mediaType") == artifact_type:
-                blob_digest = layer["digest"]
-                break
+        blob_digest = next(
+            (layer["digest"] for layer in layers if layer.get("mediaType") == artifact_type),
+            None,
+        )
         if blob_digest is None and layers:
             blob_digest = layers[0]["digest"]
         if blob_digest is None:
             raise OciError(f"referrer {referrer_digest} has no build-index layer")
         blob = client.do_request(f"{root}/blobs/{blob_digest}", "GET")
+        if blob.status_code >= 400:
+            raise OciError(f"failed to fetch build-index blob {blob_digest} ({blob.status_code})")
         return bytes(blob.content)
 
     def push_referrer(self, image_ref: str, payload: bytes, artifact_type: str) -> str:
+        try:
+            from oras.oci import Subject
+        except ImportError as e:  # pragma: no cover - exercised via extras
+            raise OciError(
+                "OCI support requires the 'oras' package; install with "
+                "\"pip install 'fath-cuan[oci]'\""
+            ) from e
+
         client = self._c()
-        container = client.get_container(image_ref)
-        base = self._manifest_base(image_ref)
-        # Digest-qualified subject: pin the referrer to the image by digest.
-        subject_digest = self._subject_digest(base)
-        subject_ref = (
-            f"{container.registry}/{container.namespace}/{container.repository}@{subject_digest}"
+        container = self._container(image_ref)
+        root = self._root(self._manifest_base(container))
+        subject_desc = self._subject_descriptor(container)  # digest-qualified subject
+        subject = Subject(
+            mediaType=subject_desc["mediaType"],
+            digest=subject_desc["digest"],
+            size=subject_desc["size"],
         )
-        target = (
-            f"{container.registry}/{container.namespace}/{container.repository}"
-            f":{_tag_safe(subject_digest)}.build-index"
-        )
+        target = f"{self._repo_ref(root)}:{_tag_safe(subject_desc['digest'])}.build-index"
 
         with tempfile.TemporaryDirectory() as tmp:
             index_path = Path(tmp) / "build-index.json"
             index_path.write_bytes(payload)
+            # Empty config whose mediaType IS the artifact type, so the registry's
+            # referrers descriptor reports artifactType == artifact_type (dist-spec
+            # fallback when the manifest carries no top-level artifactType).
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text("{}")
             resp = client.push(
                 target=target,
                 files=[f"{index_path}:{artifact_type}"],
-                subject=subject_ref,
-                manifest_annotations={"org.opencontainers.image.created": ""},
+                manifest_config=f"{config_path}:{artifact_type}",
+                subject=subject,
                 disable_path_validation=True,
                 quiet=True,
             )
-        digest = resp.headers.get("Docker-Content-Digest", "")
-        return str(digest)
+        return str(resp.headers.get("Docker-Content-Digest", ""))
