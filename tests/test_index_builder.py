@@ -102,3 +102,23 @@ def test_gav_with_nonmaven_ecosystem_rejected() -> None:
             gav="org.example:artifact:1.0.0",
             vuln_resolver=_no_vulns,
         )
+
+
+def test_maven_plus_local_rejected_for_remediation() -> None:
+    with pytest.raises(ValueError, match="upstream base equals"):
+        build_index_document(
+            version_local="1.0.0+rhlw.1",  # PyPI-shaped '+' form on a Maven GAV
+            gav="org.example:artifact:1.0.0",
+            b=1,
+            vuln_resolver=_fixed_vulns,
+        )
+
+
+def test_clean_build_allows_equal_upstream_and_full() -> None:
+    # No b/n/require -> not a remediation, so the upstream==full guard is skipped.
+    doc = build_index_document(
+        version_local="1.0.0+rhlw.1",
+        gav="org.example:artifact:1.0.0",
+        vuln_resolver=_no_vulns,
+    )
+    assert doc["version"]["upstream"] == doc["version"]["full"]

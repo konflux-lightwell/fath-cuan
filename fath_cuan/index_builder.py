@@ -94,6 +94,19 @@ def build_index_document(
     clean-build index.
     """
     coord = _resolve_coordinate(ecosystem, purl, gav, version_local, version_upstream)
+    remediation = require_vuln or b > 0 or n > 0
+    # A remediation build's upstream base must differ from its full version;
+    # if they're equal the base-version derivation missed the qualifier (e.g.
+    # a Maven --version-local using the PyPI '+rhlw.N' form, which
+    # maven_base_version can't strip), which would emit an advisory whose fix
+    # is its own vulnerable version.
+    if remediation and coord.base_version == coord.version:
+        raise ValueError(
+            f"remediation build but upstream base equals the full version "
+            f"('{coord.version}'); --version-local must carry a remediation "
+            f"qualifier (Maven '.rhlw-NNNNN', PyPI '+rhlw.N'), or pass "
+            f"--version-upstream explicitly"
+        )
     resolved = vuln_resolver(
         list(vulns or []),
         os.environ.get("VULN_IDS"),

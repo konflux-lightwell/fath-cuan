@@ -109,3 +109,24 @@ def test_resolve_no_git_no_input_is_clean() -> None:
     r = resolve_vulns([], env_value=None, git_dir=None)
     assert r.vulns == []
     assert r.tier == "clean"
+
+
+def test_parse_adr0005_rejects_placeholder_cve() -> None:
+    assert parse_adr0005_trailers("Lightwell-Fix: cve=TBD, jira=LTWL-201") == []
+
+
+def test_parse_adr0005_falls_back_to_valid_fix_when_cve_placeholder() -> None:
+    assert parse_adr0005_trailers("Lightwell-Fix: cve=none, fix=LW-2099-0007") == ["LW-2099-0007"]
+
+
+def test_resolve_tier2_placeholder_falls_through_to_tier3() -> None:
+    r = resolve_vulns(
+        [],
+        git_dir="/repo",
+        commit_message_reader=lambda _: (
+            "Fix\n\nLightwell-Fix: cve=TBD, jira=LTWL-1\nResolves: CVE-2024-4444\n"
+        ),
+        recent_log_reader=lambda _: "",
+    )
+    assert r.vulns == ["CVE-2024-4444"]
+    assert r.tier == "standard-trailer"
