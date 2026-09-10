@@ -29,6 +29,30 @@ def _canonical_index_bytes(data: dict[str, Any]) -> bytes:
     return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _emit_index(data: dict[str, Any], output: str, attach_to: str | None) -> None:
+    """Write/echo a build-index and, if requested, attach it as an OCI referrer.
+
+    The document is always emitted (stdout or file) even when ``--attach-to`` is
+    given — attaching is additive, not a replacement for producing the file.
+    """
+    payload = json.dumps(data, indent=2)
+    if output == "-":
+        click.echo(payload)
+    else:
+        Path(output).write_text(payload + "\n")
+        click.echo(f"Wrote {output}", err=True)
+
+    if attach_to:
+        try:
+            result = attach_build_index(_build_registry(), attach_to, _canonical_index_bytes(data))
+        except OciError as e:
+            raise click.ClickException(str(e)) from e
+        if result.deduplicated:
+            click.echo(f"Build-index already attached to {attach_to} (deduplicated)", err=True)
+        else:
+            click.echo(f"Attached build-index to {attach_to} ({result.referrer_digest})", err=True)
+
+
 def _build_jira_client() -> JiraClient | None:
     """Create a JiraClient from environment variables, if configured."""
     token = os.environ.get("JIRA_TOKEN")
@@ -293,21 +317,7 @@ def index_create(
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
-    if output != "-":
-        Path(output).write_text(json.dumps(data, indent=2) + "\n")
-        click.echo(f"Wrote {output}", err=True)
-    elif not attach_to:
-        click.echo(json.dumps(data, indent=2))
-
-    if attach_to:
-        try:
-            result = attach_build_index(_build_registry(), attach_to, _canonical_index_bytes(data))
-        except OciError as e:
-            raise click.ClickException(str(e)) from e
-        if result.deduplicated:
-            click.echo(f"Build-index already attached to {attach_to} (deduplicated)", err=True)
-        else:
-            click.echo(f"Attached build-index to {attach_to} ({result.referrer_digest})", err=True)
+    _emit_index(data, output, attach_to)
 
 
 @index.command("migrate")
@@ -316,8 +326,13 @@ def index_create(
     required=True,
     help="Legacy PNC gav-index.json path, or '-' for stdin.",
 )
+@click.option(
+    "--attach-to",
+    default=None,
+    help="Image reference to attach the migrated build-index to as an OCI referrer.",
+)
 @click.option("--output", default="-", help="Output path, or '-' for stdout.")
-def index_migrate(source_legacy_index: str, output: str) -> None:
+def index_migrate(source_legacy_index: str, attach_to: str | None, output: str) -> None:
     """Convert a legacy PNC gav-index into a unified build-index.json."""
     raw = read_input(None if source_legacy_index == "-" else source_legacy_index)
     if not isinstance(raw, dict) or "primaryGav" not in raw:
@@ -333,9 +348,4 @@ def index_migrate(source_legacy_index: str, output: str) -> None:
     except ValueError as e:
         raise click.UsageError(str(e)) from e
 
-    payload = json.dumps(data, indent=2)
-    if output == "-":
-        click.echo(payload)
-    else:
-        Path(output).write_text(payload + "\n")
-        click.echo(f"Wrote {output}", err=True)
+    _emit_index(data, output, attach_to)

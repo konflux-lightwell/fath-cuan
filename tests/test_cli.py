@@ -269,6 +269,29 @@ class TestIndexMigrate:
         assert result.exit_code != 0
         assert "not a legacy PNC gav-index" in result.output
 
+    def test_migrate_attach_to(self) -> None:
+        # (25) index migrate can attach the migrated build-index to a registry
+        from tests.test_oci import FakeRegistry
+
+        reg = FakeRegistry()
+        runner = CliRunner()
+        with patch("fath_cuan.cli._build_registry", return_value=reg):
+            result = runner.invoke(
+                main,
+                [
+                    "index",
+                    "migrate",
+                    "--source-legacy-index",
+                    "-",
+                    "--attach-to",
+                    "quay.io/example/img:tag",
+                ],
+                input=json.dumps(SAMPLE_INPUT_DATA),
+            )
+        assert result.exit_code == 0, result.output
+        assert reg.push_count == 1
+        assert '"ecosystem": "maven"' in result.output
+
     def test_invalid_gav_errors(self) -> None:
         bad = {**SAMPLE_INPUT_DATA, "primaryGav": "notagav"}
         runner = CliRunner()
@@ -331,6 +354,33 @@ class TestIndexCreateAttach:
         assert second.exit_code == 0
         assert reg.push_count == 1
         assert "deduplicated" in second.output
+
+    def test_attach_still_emits_document(self) -> None:
+        # (24) --attach-to must NOT suppress the emitted build-index (default --output -)
+        from tests.test_oci import FakeRegistry
+
+        reg = FakeRegistry()
+        runner = CliRunner()
+        with patch("fath_cuan.cli._build_registry", return_value=reg):
+            result = runner.invoke(
+                main,
+                [
+                    "index",
+                    "create",
+                    "--purl",
+                    "pkg:pypi/coverage@7.6.12",
+                    "--version-local",
+                    "7.6.12+rhlw.1",
+                    "--vuln",
+                    "CVE-2099-1",
+                    "--attach-to",
+                    "quay.io/example/img:tag",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert '"primaryPurl"' in result.output  # doc still emitted
+        assert "Attached build-index" in result.output
+        assert reg.push_count == 1
 
     def test_attach_conflict_fails(self) -> None:
         from tests.test_oci import FakeRegistry

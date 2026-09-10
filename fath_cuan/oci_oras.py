@@ -111,28 +111,43 @@ class OrasRegistry:
             "size": size,
         }
 
+    @staticmethod
+    def _next_link(link_header: str | None, root: str) -> str | None:
+        """Extract the ``rel="next"`` URL from a Referrers API ``Link`` header."""
+        if not link_header:
+            return None
+        for part in link_header.split(","):
+            seg = part.split(";")
+            if len(seg) < 2:
+                continue
+            if 'rel="next"' in seg[1] or seg[1].strip() == "rel=next":
+                url = seg[0].strip().lstrip("<").rstrip(">")
+                if url.startswith("http"):
+                    return url
+                base = root.split("/v2/", 1)[0]  # scheme://registry
+                return base + url if url.startswith("/") else f"{base}/{url}"
+        return None
+
     def list_referrer_payloads(self, image_ref: str, artifact_type: str) -> list[bytes]:
         client = self._c()
         container = self._container(image_ref)
         root = self._root(self._manifest_base(container))
         subject_digest = self._subject_descriptor(container)["digest"]
 
-        resp = client.do_request(
-            f"{root}/referrers/{subject_digest}",
-            "GET",
-            headers={"Accept": _REFERRERS_ACCEPT},
-        )
-        if resp.status_code == 404:
-            logger.debug("No referrers API result for %s", subject_digest)
-            return []
-        if resp.status_code >= 400:
-            raise OciError(f"referrers query failed ({resp.status_code}) for {image_ref}")
-
+        url: str | None = f"{root}/referrers/{subject_digest}"
         payloads: list[bytes] = []
-        for desc in resp.json().get("manifests", []):
-            if desc.get("artifactType") != artifact_type:
-                continue
-            payloads.append(self._fetch_payload(root, desc["digest"], artifact_type))
+        while url:
+            resp = client.do_request(url, "GET", headers={"Accept": _REFERRERS_ACCEPT})
+            if resp.status_code == 404:
+                logger.debug("No referrers API result for %s", subject_digest)
+                return []
+            if resp.status_code >= 400:
+                raise OciError(f"referrers query failed ({resp.status_code}) for {image_ref}")
+            for desc in resp.json().get("manifests", []):
+                if desc.get("artifactType") == artifact_type:
+                    payloads.append(self._fetch_payload(root, desc["digest"], artifact_type))
+            # Follow the Referrers API Link-header pagination (dist-spec).
+            url = self._next_link(resp.headers.get("Link"), root)
         return payloads
 
     def _fetch_payload(self, root: str, referrer_digest: str, artifact_type: str) -> bytes:
@@ -188,12 +203,15 @@ class OrasRegistry:
             # fallback when the manifest carries no top-level artifactType).
             config_path = Path(tmp) / "config.json"
             config_path.write_text("{}")
-            resp = client.push(
-                target=target,
-                files=[f"{index_path}:{artifact_type}"],
-                manifest_config=f"{config_path}:{artifact_type}",
-                subject=subject,
-                disable_path_validation=True,
-                quiet=True,
-            )
+            try:
+                resp = client.push(
+                    target=target,
+                    files=[f"{index_path}:{artifact_type}"],
+                    manifest_config=f"{config_path}:{artifact_type}",
+                    subject=subject,
+                    disable_path_validation=True,
+                    quiet=True,
+                )
+            except Exception as e:  # oras raises bare builtins (ValueError, etc.)
+                raise OciError(f"failed to push build-index referrer to {target}: {e}") from e
         return str(resp.headers.get("Docker-Content-Digest", ""))
