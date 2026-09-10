@@ -66,6 +66,11 @@ def parse_adr0005_trailers(text: str) -> list[str]:
     One identifier is emitted per fix line: the public ``cve=`` when present,
     otherwise the internal ``fix=`` novel ID. Emitting both would create two
     OSV records for the same underlying flaw.
+
+    Each candidate is validated against the CVE-/LW- shape (like tiers 3 and 4),
+    so a placeholder such as ``cve=TBD`` / ``cve=none`` / ``fix=n/a`` is rejected
+    and the line falls through to a looser tier instead of producing a junk
+    advisory that would slip past the ``--require-vuln`` guard.
     """
     vulns: list[str] = []
     for raw in text.splitlines():
@@ -78,9 +83,12 @@ def parse_adr0005_trailers(text: str) -> list[str]:
             if "=" in pair:
                 key, value = pair.split("=", 1)
                 fields[key.strip().lower()] = value.strip()
-        chosen = fields.get("cve") or fields.get("fix")
-        if chosen:
-            vulns.append(chosen)
+        # Prefer cve, fall back to fix; take the first that contains a valid ID.
+        for candidate in (fields.get("cve"), fields.get("fix")):
+            found = _VULN_RE.findall(candidate) if candidate else []
+            if found:
+                vulns.extend(found)
+                break
     return _dedup(vulns)
 
 
