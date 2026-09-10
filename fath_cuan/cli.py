@@ -229,6 +229,14 @@ def index_create(
 def index_migrate(source_legacy_index: str, output: str) -> None:
     """Convert a legacy PNC gav-index into a unified build-index.json."""
     raw = read_input(None if source_legacy_index == "-" else source_legacy_index)
+    if not isinstance(raw, dict) or "primaryGav" not in raw:
+        # Cheap pre-check: migrate is the command most likely pointed at the
+        # wrong file (e.g. an already-migrated build-index). Fail with a clear
+        # line instead of a multi-line pydantic ValidationError dump.
+        raise click.UsageError(
+            "input is not a legacy PNC gav-index (no 'primaryGav' field); "
+            "index migrate expects a gav-index.json, not a build-index"
+        )
     try:
         data = migrate_document(raw)
     except ValueError as e:

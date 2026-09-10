@@ -255,6 +255,20 @@ class TestIndexMigrate:
         data = json.loads(out.read_text())
         assert data["purls"][0] == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
 
+    def test_rejects_non_gav_index(self) -> None:
+        # a build-index (no primaryGav) fed to migrate -> clean error, no pydantic dump
+        runner = CliRunner()
+        bi = {
+            "ecosystem": "maven",
+            "version": {"upstream": "1.0.0"},
+            "purls": ["pkg:maven/g/a@1.0.0"],
+        }
+        result = runner.invoke(
+            main, ["index", "migrate", "--source-legacy-index", "-"], input=json.dumps(bi)
+        )
+        assert result.exit_code != 0
+        assert "not a legacy PNC gav-index" in result.output
+
     def test_invalid_gav_errors(self) -> None:
         bad = {**SAMPLE_INPUT_DATA, "primaryGav": "notagav"}
         runner = CliRunner()

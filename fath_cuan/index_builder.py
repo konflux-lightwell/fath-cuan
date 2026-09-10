@@ -191,8 +191,16 @@ def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:
     Converts ``primaryGav`` and every ``gavs[]`` entry into canonical
     ``pkg:maven`` PURLs (primary first, de-duplicated), preserves ``vulns``
     and the build's ``created`` timestamp so downstream OSV records are
-    unchanged, and records the primary's decomposed version. ``b``/``n`` are
-    set to 0 — the legacy format doesn't carry backport/novel counts.
+    unchanged, and records the primary's decomposed version.
+
+    ``b``/``n`` are derived from the vuln IDs: ADR-0005 backports carry ``CVE-``
+    IDs and novel fixes carry ``LW-`` IDs. This is a heuristic (a novel fix that
+    later gets a CVE assigned would land in the backport bucket), but it is
+    strictly better than asserting 0/0, which would make every migrated build
+    look like a non-remediation to consumers filtering on ``b + n > 0``. It also
+    means a legacy index whose ``primaryGav`` lacks the ``.rhlw-`` qualifier is
+    caught by the BuildIndex remediation guard rather than silently emitting an
+    advisory whose fix is its own vulnerable version.
     """
     doc = InputDocument.from_dict(gav_index)
     primary = maven_coordinate(doc.primary_gav, doc.upstream_version)
@@ -205,6 +213,9 @@ def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:
             seen.add(purl)
             purls.append(purl)
 
+    b = sum(1 for v in doc.vulns if v.startswith("CVE-"))
+    n = sum(1 for v in doc.vulns if v.startswith("LW-"))
+
     return _finalize(
         {
             "buildId": doc.build_id,
@@ -212,8 +223,8 @@ def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:
             "version": {
                 "upstream": primary.base_version,
                 "full": primary.version,
-                "b": 0,
-                "n": 0,
+                "b": b,
+                "n": n,
             },
             "primaryPurl": primary.purl,
             "purls": purls,

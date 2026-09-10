@@ -194,8 +194,36 @@ def test_migrate_basic() -> None:
     doc = migrate_document(SAMPLE_INPUT_DATA)
     assert doc["ecosystem"] == "maven"
     assert doc["purls"][0] == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
-    assert doc["version"] == {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 0, "n": 0}
+    # b/n derived from vuln IDs (1 CVE backport, 0 novel).
+    assert doc["version"] == {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 0}
     assert doc["vulns"] == ["CVE-2024-25710"]
+
+
+def test_migrate_derives_b_n_from_vuln_prefixes() -> None:
+    src = {**SAMPLE_INPUT_DATA, "vulns": ["CVE-2024-1", "CVE-2024-2", "LW-2026-0001"]}
+    doc = migrate_document(src)
+    assert doc["version"]["b"] == 2
+    assert doc["version"]["n"] == 1
+
+
+def test_migrate_rejects_non_rhlw_primary_gav() -> None:
+    # primaryGav lacks the .rhlw- qualifier -> upstream == full with vulns present
+    # -> the BuildIndex remediation guard fires (item 21).
+    src = {**SAMPLE_INPUT_DATA, "primaryGav": "org.example:artifact:1.0.0", "gavs": []}
+    with pytest.raises(ValueError, match=r"version\.full distinct"):
+        migrate_document(src)
+
+
+def test_migrate_trimmed_index_without_optional_fields() -> None:
+    # A trimmed legacy index (no evidence/gavCount/gavIndexTag/gavs) still migrates.
+    trimmed = {
+        "buildId": "B1",
+        "created": "2026-07-15T14:02:27+00:00",
+        "vulns": ["CVE-2024-25710"],
+        "primaryGav": "org.example:artifact:1.0.0.rhlw-00001",
+    }
+    doc = migrate_document(trimmed)
+    assert doc["purls"] == ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"]
 
 
 def test_migrate_preserves_build_id_and_created() -> None:
