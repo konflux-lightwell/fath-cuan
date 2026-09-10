@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from typing import Any
 
+from fath_cuan.ecosystems import (
+    Coordinate,
+    coordinate_from_purl,
+    maven_base_version,
+    maven_coordinate,
+    parse_gav,
+    pep503_normalize,
+)
 from fath_cuan.jira.client import JiraClient
 from fath_cuan.jira.models import VulnerabilityData
+from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
 from fath_cuan.models.osv import (
     AffectedEntry,
@@ -41,23 +50,11 @@ _ADVISORY_PATTERNS = (
 )
 
 
-def _parse_gav(gav: str) -> tuple[str, str, str]:
-    """Split a Maven GAV string ('group:artifact:version') into its parts."""
-    parts = gav.split(":")
-    if len(parts) != 3:
-        raise ValueError(f"Invalid GAV format, expected 'group:artifact:version': {gav}")
-    return parts[0], parts[1], parts[2]
-
-
-def _base_version(version: str) -> str:
-    """Strip the rhlw qualifier to get the upstream base version."""
-    m = re.match(r"^(.+?)\.rhlw-\w+-\d+$", version)
-    if m:
-        return m.group(1)
-    m = re.match(r"^(.+?)\.rhlw-\d+$", version)
-    if m:
-        return m.group(1)
-    return version
+# Backward-compatible aliases. The canonical implementations now live in
+# fath_cuan.ecosystems; these names are kept because tests and the Java OSV
+# behaviour they pin import them from this module.
+_parse_gav = parse_gav
+_base_version = maven_base_version
 
 
 def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
@@ -182,26 +179,55 @@ def _extract_references(upstream: dict[str, Any], cve_id: str) -> list[Reference
     return refs
 
 
-def _extract_introduced(upstream: dict[str, Any], coordinates: str) -> str:
+def _introduced_from_entry(affected: dict[str, Any]) -> str | None:
+    """Return the introduced version from an affected entry's ECOSYSTEM range."""
+    for r in affected.get("ranges", []):
+        if r.get("type") != "ECOSYSTEM":
+            continue
+        for e in r.get("events", []):
+            if "introduced" in e:
+                return str(e["introduced"])
+    return None
+
+
+def _extract_introduced(
+    upstream: dict[str, Any], coordinates: str, osv_ecosystem: str = "Maven"
+) -> str:
     """Extract the introduced version from upstream OSV ECOSYSTEM range.
 
-    Searches the upstream affected entries for a matching Maven package
-    and returns the introduced version from its ECOSYSTEM range.
-    Falls back to "0" if no matching range is found.
+    Searches the upstream affected entries for a package in the given OSV
+    ecosystem (e.g. "Maven", "PyPI") whose name matches ``coordinates``. An
+    **exact** name match is preferred across all entries; only if none exists
+    does it fall back to a substring match. This avoids single-token PyPI names
+    (e.g. ``requests`` vs ``requests-oauthlib``) picking the wrong advisory
+    entry based on ordering.
+
+    For PyPI, both sides are PEP 503-normalized before comparison, so an
+    upstream name in any casing/separator form (``Coverage``, ``zope.interface``)
+    still matches our already-normalized coordinate — otherwise the lookup would
+    silently miss and emit an over-broad ``introduced: "0"``. Falls back to "0"
+    if no match yields an introduced version.
     """
-    for a in upstream.get("affected", []):
-        pkg = a.get("package", {})
-        if pkg.get("ecosystem") != "Maven":
-            continue
-        upstream_name = pkg.get("name", "")
-        if upstream_name != coordinates and coordinates not in upstream_name:
-            continue
-        for r in a.get("ranges", []):
-            if r.get("type") != "ECOSYSTEM":
-                continue
-            for e in r.get("events", []):
-                if "introduced" in e:
-                    return str(e["introduced"])
+
+    def _norm(name: str) -> str:
+        return pep503_normalize(name) if osv_ecosystem == "PyPI" else name
+
+    target = _norm(coordinates)
+    entries = [
+        a
+        for a in upstream.get("affected", [])
+        if a.get("package", {}).get("ecosystem") == osv_ecosystem
+    ]
+    for a in entries:  # exact match first
+        if _norm(a.get("package", {}).get("name", "")) == target:
+            v = _introduced_from_entry(a)
+            if v is not None:
+                return v
+    for a in entries:  # substring fallback
+        if target in _norm(a.get("package", {}).get("name", "")):
+            v = _introduced_from_entry(a)
+            if v is not None:
+                return v
     return "0"
 
 
@@ -272,7 +298,65 @@ def convert(
     jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
 ) -> list[OSVDocument]:
-    """Convert a PNC gav-index into one OSV record per CVE.
+    """Convert a PNC (Maven) gav-index into one OSV record per CVE.
+
+    Thin adapter over :func:`_build_records`: resolves the Maven coordinate
+    from the gav-index and delegates. See :func:`_build_records` for the data
+    source priority and embargo semantics.
+    """
+    coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
+    return _build_records(
+        coord,
+        doc.vulns,
+        doc.created,
+        embargo=embargo,
+        osidb_client=osidb_client,
+        jira_client=jira_client,
+        redact_embargoed=redact_embargoed,
+    )
+
+
+def convert_build_index(
+    bi: BuildIndex,
+    embargo: bool = False,
+    osidb_client: OsidbClient | None = None,
+    jira_client: JiraClient | None = None,
+    redact_embargoed: bool = False,
+) -> list[OSVDocument]:
+    """Convert a unified build-index into one OSV record per vulnerability.
+
+    Supports both Maven and PyPI ecosystems. The affected package is resolved
+    from the build-index's ``primaryPurl`` and its ``version.upstream``.
+    Delegates to the shared :func:`_build_records` core, so Maven and Python
+    records share identical enrichment, embargo, and formatting behaviour.
+    """
+    coord = coordinate_from_purl(
+        bi.primary_purl,
+        ecosystem=bi.ecosystem,
+        upstream_version=bi.version.upstream,
+    )
+    created = bi.created if bi.created else datetime.now(UTC)
+    return _build_records(
+        coord,
+        bi.vulns,
+        created,
+        embargo=embargo,
+        osidb_client=osidb_client,
+        jira_client=jira_client,
+        redact_embargoed=redact_embargoed,
+    )
+
+
+def _build_records(
+    coord: Coordinate,
+    vulns: list[str],
+    created: datetime,
+    embargo: bool = False,
+    osidb_client: OsidbClient | None = None,
+    jira_client: JiraClient | None = None,
+    redact_embargoed: bool = False,
+) -> list[OSVDocument]:
+    """Build OSV records for a resolved coordinate and vulnerability list.
 
     Matches the Lightwell OSV format specification. Data source priority:
     1. OSIDB (structured vulnerability metadata, when available)
@@ -286,19 +370,24 @@ def convert(
     for embargoed flaws — use this when generating files destined for a
     public or less-trusted distribution.
     """
-    group_id, artifact_id, version = _parse_gav(doc.primary_gav)
-    base_ver = doc.upstream_version if doc.upstream_version else _base_version(version)
-    coordinates = f"{group_id}:{artifact_id}"
-    purl = f"pkg:maven/{group_id}/{artifact_id}@{version}"
-    logger.debug("Converting %s (%s) with %d vulns", coordinates, version, len(doc.vulns))
+    coordinates = coord.name
+    purl = coord.purl
+    version = coord.version
+    base_ver = coord.base_version
+    osv_ecosystem = coord.osv_ecosystem
+    logger.debug("Converting %s (%s) with %d vulns", coordinates, version, len(vulns))
 
-    published = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Convert to UTC before stamping the trailing 'Z' — a producer-supplied
+    # non-UTC offset must be shifted, not silently relabelled as UTC. Treat a
+    # naive datetime as already-UTC.
+    created_utc = created if created.tzinfo else created.replace(tzinfo=UTC)
+    published = created_utc.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
 
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()
 
-    for cve_id in doc.vulns:
+    for cve_id in vulns:
         if cve_id in seen_cves:
             logger.debug("Skipping duplicate %s", cve_id)
             continue
@@ -315,7 +404,7 @@ def convert(
                 aliases=[],
                 affected=[
                     AffectedEntry(
-                        package=Package(name="", purl=None),
+                        package=Package(name="", purl=None, ecosystem=osv_ecosystem),
                         ranges=[],
                     )
                 ],
@@ -348,7 +437,7 @@ def convert(
                 aliases=[],
                 affected=[
                     AffectedEntry(
-                        package=Package(name="", purl=None),
+                        package=Package(name="", purl=None, ecosystem=osv_ecosystem),
                         ranges=[],
                     )
                 ],
@@ -439,7 +528,7 @@ def convert(
                 )
             )
 
-        introduced = _extract_introduced(upstream, coordinates) if upstream else "0"
+        introduced = _extract_introduced(upstream, coordinates, osv_ecosystem) if upstream else "0"
 
         source = "novel-pipeline" if cve_id.startswith("LW-") else "pnc-build"
 
@@ -447,7 +536,7 @@ def convert(
             lw_meta_extra["lw_id"] = cve_id
 
         affected = AffectedEntry(
-            package=Package(name=coordinates, purl=purl),
+            package=Package(name=coordinates, purl=purl, ecosystem=osv_ecosystem),
             versions=[base_ver],
             ranges=[
                 Range(
