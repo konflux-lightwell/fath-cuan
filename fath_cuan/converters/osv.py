@@ -237,6 +237,101 @@ def _extract_introduced(
     return "0"
 
 
+def _norm_name(name: str, osv_ecosystem: str) -> str:
+    """Normalize a package name for cross-source matching (PEP 503 for PyPI)."""
+    return pep503_normalize(name) if osv_ecosystem == "PyPI" else name
+
+
+def _candidate_index(built_coords: list[Coordinate]) -> dict[str, Coordinate]:
+    """Map normalized package name -> the Coordinate actually built for it.
+
+    These are the artifacts the build produced (the gav-index ``gavs[]`` /
+    build-index ``purls[]``). The affected module resolved from the upstream
+    advisory or OSIDB is matched against this set so the OSV names the module
+    that was really shipped — not the build's arbitrary primary coordinate.
+    """
+    index: dict[str, Coordinate] = {}
+    for c in built_coords:
+        index.setdefault(_norm_name(c.name, c.osv_ecosystem), c)
+    return index
+
+
+def _upstream_affected_names(upstream: dict[str, Any] | None, osv_ecosystem: str) -> list[str]:
+    """Affected package names for ``osv_ecosystem`` from an upstream OSV record."""
+    if not upstream:
+        return []
+    names: list[str] = []
+    for a in upstream.get("affected", []):
+        pkg = a.get("package", {})
+        if pkg.get("ecosystem") == osv_ecosystem:
+            name = pkg.get("name", "")
+            if name:
+                names.append(name)
+    return names
+
+
+def _resolve_affected(
+    upstream: dict[str, Any] | None,
+    osidb_meta: dict[str, Any] | None,
+    candidates: dict[str, Coordinate],
+    osv_ecosystem: str,
+) -> tuple[list[Coordinate], bool]:
+    """Resolve a vuln's true affected module(s) to the coordinate(s) actually built.
+
+    Returns ``(matched, strict)``:
+
+    * **CVE (upstream advisory)** is authoritative. When it names affected
+      packages in this ecosystem, ``strict`` is True — the caller emits only the
+      matched built modules and DROPS the record if none match, rather than fall
+      back to the build's arbitrary primary coordinate (the ``primaryGav``
+      mis-attribution this fix exists to eliminate). Matching is exact.
+    * **Novel (OSIDB components)** is advisory but fuzzy (Red Hat component names
+      do not always map 1:1 to Maven coordinates), so ``strict`` is False: a
+      match is used when found (incl. bare-artifactId), otherwise the caller
+      falls back.
+    """
+    if not candidates:
+        return [], False
+
+    def _collect(names: list[str], fuzzy: bool) -> list[Coordinate]:
+        out: list[Coordinate] = []
+        seen: set[str] = set()
+        for n in names:
+            key = _norm_name(str(n), osv_ecosystem)
+            cand = candidates.get(key)
+            if cand is None and fuzzy:
+                for cand_key, c in candidates.items():
+                    artifact = cand_key.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+                    if key == artifact:
+                        cand = c
+                        break
+            if cand is not None and cand.name not in seen:
+                seen.add(cand.name)
+                out.append(cand)
+        return out
+
+    upstream_names = _upstream_affected_names(upstream, osv_ecosystem)
+    if upstream_names:
+        return _collect(upstream_names, fuzzy=False), True
+
+    if osidb_meta:
+        comps = [str(c) for c in (osidb_meta.get("components") or [])]
+        if comps:
+            return _collect(comps, fuzzy=True), False
+
+    return [], False
+
+
+def _affected_entry(c: Coordinate, upstream: dict[str, Any] | None) -> AffectedEntry:
+    """Build an OSV AffectedEntry for a built coordinate, with the upstream introduced range."""
+    introduced = _extract_introduced(upstream, c.name, c.osv_ecosystem) if upstream else "0"
+    return AffectedEntry(
+        package=Package(name=c.name, purl=c.purl, ecosystem=c.osv_ecosystem),
+        versions=[c.base_version],
+        ranges=[Range(events=[Event(introduced=introduced), Event(fixed=c.version)])],
+    )
+
+
 def _extract_aliases(upstream: dict[str, Any], cve_id: str) -> list[str]:
     """Extract aliases from upstream OSV, ensuring the CVE is included."""
     aliases = list(upstream.get("aliases", []))
@@ -297,6 +392,28 @@ def _extract_summary_details(
     return summary, details
 
 
+def _maven_built_coords(gavs: list[str]) -> list[Coordinate]:
+    """Resolve each gav-index GAV to a Coordinate (skipping unparseable entries)."""
+    coords: list[Coordinate] = []
+    for gav in gavs:
+        try:
+            coords.append(maven_coordinate(gav))
+        except ValueError:
+            logger.debug("Skipping unparseable gav %r", gav)
+    return coords
+
+
+def _purl_built_coords(purls: list[str], ecosystem: str) -> list[Coordinate]:
+    """Resolve each build-index PURL to a Coordinate (skipping unparseable entries)."""
+    coords: list[Coordinate] = []
+    for purl in purls:
+        try:
+            coords.append(coordinate_from_purl(purl, ecosystem=ecosystem))
+        except ValueError:
+            logger.debug("Skipping unparseable purl %r", purl)
+    return coords
+
+
 def convert(
     doc: InputDocument,
     embargo: bool = False,
@@ -311,6 +428,7 @@ def convert(
     source priority and embargo semantics.
     """
     coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
+    built_coords = _maven_built_coords(doc.gavs)
     return _build_records(
         coord,
         doc.vulns,
@@ -319,6 +437,7 @@ def convert(
         osidb_client=osidb_client,
         jira_client=jira_client,
         redact_embargoed=redact_embargoed,
+        built_coords=built_coords,
     )
 
 
@@ -341,6 +460,7 @@ def convert_build_index(
         ecosystem=bi.ecosystem,
         upstream_version=bi.version.upstream,
     )
+    built_coords = _purl_built_coords(bi.purls, bi.ecosystem)
     created = bi.created if bi.created else datetime.now(UTC)
     return _build_records(
         coord,
@@ -350,6 +470,7 @@ def convert_build_index(
         osidb_client=osidb_client,
         jira_client=jira_client,
         redact_embargoed=redact_embargoed,
+        built_coords=built_coords,
     )
 
 
@@ -361,8 +482,17 @@ def _build_records(
     osidb_client: OsidbClient | None = None,
     jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
+    built_coords: list[Coordinate] | None = None,
 ) -> list[OSVDocument]:
     """Build OSV records for a resolved coordinate and vulnerability list.
+
+    The affected package for each vuln is resolved to the module actually
+    vulnerable — CVEs from the upstream advisory, novels from OSIDB — and matched
+    against ``built_coords`` (the modules this build produced). This replaces the
+    old behaviour of stamping every vuln with the build's arbitrary primary
+    coordinate. When no authoritative source names an affected package, it falls
+    back to ``coord`` (the primary). A CVE whose upstream-affected module is not
+    among ``built_coords`` is DROPPED rather than mis-attributed.
 
     Matches the Lightwell OSV format specification. Data source priority:
     1. OSIDB (structured vulnerability metadata, when available)
@@ -377,7 +507,6 @@ def _build_records(
     public or less-trusted distribution.
     """
     coordinates = coord.name
-    purl = coord.purl
     version = coord.version
     base_ver = coord.base_version
     osv_ecosystem = coord.osv_ecosystem
@@ -389,6 +518,8 @@ def _build_records(
     created_utc = created if created.tzinfo else created.replace(tzinfo=UTC)
     published = created_utc.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
+
+    candidates = _candidate_index(built_coords or [])
 
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()
@@ -534,25 +665,27 @@ def _build_records(
                 )
             )
 
-        introduced = _extract_introduced(upstream, coordinates, osv_ecosystem) if upstream else "0"
-
         source = "novel-pipeline" if cve_id.startswith("LW-") else "pnc-build"
 
         if cve_id.startswith("LW-") and "lw_id" not in lw_meta_extra:
             lw_meta_extra["lw_id"] = cve_id
 
-        affected = AffectedEntry(
-            package=Package(name=coordinates, purl=purl, ecosystem=osv_ecosystem),
-            versions=[base_ver],
-            ranges=[
-                Range(
-                    events=[
-                        Event(introduced=introduced),
-                        Event(fixed=version),
-                    ]
-                )
-            ],
-        )
+        # Resolve the affected module(s) to what was actually built, instead of
+        # stamping the build's arbitrary primary coordinate on every vuln.
+        matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
+        if matched:
+            affected_entries = [_affected_entry(mc, upstream) for mc in matched]
+        elif strict:
+            logger.error(
+                "Skipping %s: upstream affected package(s) not among this build's "
+                "modules (built: %s); refusing to attribute to primary coordinate %s",
+                cve_id,
+                sorted(candidates) or "<none>",
+                coordinates,
+            )
+            continue
+        else:
+            affected_entries = [_affected_entry(coord, upstream)]
 
         lw_meta = LightwellMeta(
             source=source,
@@ -569,7 +702,7 @@ def _build_records(
             summary=summary,
             details=details,
             aliases=aliases,
-            affected=[affected],
+            affected=affected_entries,
             credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
             database_specific=DatabaseSpecific(lightwell=lw_meta),
         )
