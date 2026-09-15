@@ -53,15 +53,18 @@ class BuildIndex(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _backfill_primary_purl(cls, data: Any) -> Any:
-        """Default primaryPurl to the first purl when absent.
+        """Default primaryPurl to the sole purl, only when there is exactly one.
 
-        The revised contract makes ``primaryPurl`` a required field; producers
-        always emit it. This keeps consumption forgiving for indexes that carry
-        only ``purls[]`` by promoting the first entry.
+        ``primaryPurl`` is a required field; producers always emit it. As a
+        convenience we backfill it ONLY for a single-purl index, where the
+        primary is unambiguous. A multi-purl index with no primaryPurl is left
+        unset so the required-field validation fails — promoting ``purls[0]``
+        there could silently pick a secondary/transitive package as the affected
+        artifact, which is exactly what making primaryPurl required prevents.
         """
         if isinstance(data, dict) and not data.get("primaryPurl") and not data.get("primary_purl"):
             purls = data.get("purls")
-            if isinstance(purls, list) and purls:
+            if isinstance(purls, list) and len(purls) == 1:
                 data = {**data, "primaryPurl": purls[0]}
         return data
 
@@ -108,18 +111,19 @@ class BuildIndex(BaseModel):
         """A remediation build must carry a full version distinct from upstream.
 
         Enforced at the schema boundary so every ecosystem and every producer
-        (index create, index migrate, external tools) is covered at once: if the
-        build declares itself a remediation (``b`` or ``n`` > 0) it must have a
-        ``version.full`` that differs from ``version.upstream`` — otherwise the
-        OSV ``fixed`` event equals the vulnerable version, which a scanner reads
-        as "no fix exists".
+        (index create, index migrate, external tools) is covered at once. A build
+        is a remediation if it declares backport/novel counts (``b`` or ``n`` > 0)
+        **or** simply carries ``vulns`` — a migrated index writes ``b=0, n=0`` yet
+        still lists the CVEs it fixed. Either way it must have a ``version.full``
+        that differs from ``version.upstream``; otherwise the OSV ``fixed`` event
+        equals the vulnerable version, which a scanner reads as "no fix exists".
         """
-        if (self.version.b or self.version.n) and (
-            not self.version.full or self.version.full == self.version.upstream
-        ):
+        remediation = bool(self.version.b or self.version.n or self.vulns)
+        if remediation and (not self.version.full or self.version.full == self.version.upstream):
             raise ValueError(
-                f"remediation build (b={self.version.b}, n={self.version.n}) must carry a "
-                f"version.full distinct from version.upstream ('{self.version.upstream}')"
+                f"remediation build (b={self.version.b}, n={self.version.n}, "
+                f"vulns={len(self.vulns)}) must carry a version.full distinct from "
+                f"version.upstream ('{self.version.upstream}')"
             )
         return self
 

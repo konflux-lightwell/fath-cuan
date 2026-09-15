@@ -242,6 +242,20 @@ def test_extract_introduced_substring_fallback_when_no_exact() -> None:
     assert _extract_introduced(upstream, "org.springframework:spring-webmvc", "Maven") == "6.1.0"
 
 
+def test_extract_introduced_pypi_no_substring_fallback() -> None:
+    # (16) a bare 'requests' must NOT bind to 'requests-oauthlib' via the substring
+    # fallback — that fallback is disabled for PEP 503-normalized (PyPI) names.
+    upstream = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "requests-oauthlib"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0.1.0"}]}],
+            }
+        ]
+    }
+    assert _extract_introduced(upstream, "requests", "PyPI") == "0"
+
+
 def test_extract_introduced_pypi_normalizes_both_sides() -> None:
     # (12) upstream name in non-normalized form still matches our PEP503 coordinate.
     upstream = {

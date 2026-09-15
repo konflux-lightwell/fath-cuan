@@ -223,11 +223,17 @@ def _extract_introduced(
             v = _introduced_from_entry(a)
             if v is not None:
                 return v
-    for a in entries:  # substring fallback
-        if target in _norm(a.get("package", {}).get("name", "")):
-            v = _introduced_from_entry(a)
-            if v is not None:
-                return v
+    # Substring fallback is unsafe for exact-normalized ecosystems (PyPI): a
+    # single-token name like 'requests' would bind to any advisory package that
+    # merely contains it (e.g. 'requests-oauthlib'). PyPI names are PEP 503-
+    # normalized on both sides, so the exact pass above is authoritative — skip
+    # the fallback there. Keep it only for ecosystems without such normalization.
+    if osv_ecosystem != "PyPI":
+        for a in entries:  # substring fallback (non-normalized ecosystems only)
+            if target in _norm(a.get("package", {}).get("name", "")):
+                v = _introduced_from_entry(a)
+                if v is not None:
+                    return v
     return "0"
 
 
