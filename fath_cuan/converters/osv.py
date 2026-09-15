@@ -197,10 +197,10 @@ def _extract_introduced(
 
     Searches the upstream affected entries for a package in the given OSV
     ecosystem (e.g. "Maven", "PyPI") whose name matches ``coordinates``. An
-    **exact** name match is preferred across all entries; only if none exists
-    does it fall back to a substring match. This avoids single-token PyPI names
-    (e.g. ``requests`` vs ``requests-oauthlib``) picking the wrong advisory
-    entry based on ordering.
+    **exact** name match is always preferred. For non-normalized ecosystems a
+    substring match is used as a fallback when no exact entry exists; for PyPI
+    the substring fallback is **disabled** so a bare ``requests`` cannot bind to
+    ``requests-oauthlib`` — exact match is authoritative there.
 
     For PyPI, both sides are PEP 503-normalized before comparison, so an
     upstream name in any casing/separator form (``Coverage``, ``zope.interface``)
