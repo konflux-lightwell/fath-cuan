@@ -66,7 +66,9 @@ def test_created_optional() -> None:
 
 
 def test_version_counters_default_zero() -> None:
-    bi = BuildIndex.from_dict({**VALID_PYPI, "version": {"upstream": "7.6.12"}})
+    # Clean build (no vulns) — upstream-only version parses with b/n defaulting to 0.
+    payload = {k: v for k, v in VALID_PYPI.items() if k != "vulns"}
+    bi = BuildIndex.from_dict({**payload, "version": {"upstream": "7.6.12"}})
     assert bi.version.b == 0
     assert bi.version.n == 0
     assert bi.version.full is None
@@ -108,8 +110,10 @@ def test_primary_purl_matching_full_ok() -> None:
 
 
 def test_no_full_skips_match_check() -> None:
+    # Clean build (no vulns): with no version.full the primaryPurl-match check is skipped.
+    payload = {k: v for k, v in VALID_PYPI.items() if k != "vulns"}
     payload = {
-        **VALID_PYPI,
+        **payload,
         "version": {"upstream": "7.6.12"},
         "primaryPurl": "pkg:pypi/coverage@7.6.12",
         "purls": ["pkg:pypi/coverage@7.6.12"],
@@ -139,6 +143,37 @@ def test_remediation_full_equals_upstream_rejected() -> None:
                 "primaryPurl": "pkg:pypi/coverage@7.6.12",
                 "purls": ["pkg:pypi/coverage@7.6.12"],
                 "vulns": ["CVE-2024-25710"],
+            }
+        )
+
+
+def test_vulns_without_remediated_version_rejected() -> None:
+    # (17) a build carrying vulns but b=0, n=0 and no version.full still asserts a
+    # remediation; it must be rejected rather than emitting fixed == affected.
+    with pytest.raises(ValueError, match=r"version\.full distinct"):
+        BuildIndex.from_dict(
+            {
+                "ecosystem": "pypi",
+                "version": {"upstream": "7.6.12"},  # b=0, n=0, no full
+                "primaryPurl": "pkg:pypi/coverage@7.6.12",
+                "purls": ["pkg:pypi/coverage@7.6.12"],
+                "vulns": ["CVE-2024-25710"],
+            }
+        )
+
+
+def test_multi_purl_without_primary_purl_rejected() -> None:
+    # (18) backfill must not guess purls[0] for a multi-purl index; the required
+    # primaryPurl field should fail instead of silently picking a secondary pkg.
+    payload = {k: v for k, v in VALID_PYPI.items() if k != "primaryPurl"}
+    with pytest.raises(ValueError):
+        BuildIndex.from_dict(
+            {
+                **payload,
+                "purls": [
+                    "pkg:pypi/other@9.9.9%2Brhlw.1",
+                    "pkg:pypi/coverage@7.6.12%2Brhlw.1",
+                ],
             }
         )
 
