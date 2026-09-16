@@ -139,6 +139,21 @@ def test_require_vuln_rejects_tier4_regex() -> None:
         )
 
 
+def test_bn_build_rejects_tier4_regex() -> None:
+    def _regex(*a: object, **k: object) -> ResolvedVulns:
+        return ResolvedVulns(["CVE-2019-0001"], "regex")
+
+    # A --b/--n remediation build (no --require-vuln) must also refuse a
+    # tier-4 regex-swept ID, not just --require-vuln builds.
+    with pytest.raises(ValueError, match="tier-4"):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage",
+            b=1,
+            vuln_resolver=_regex,
+        )
+
+
 def test_versionless_purl_accepted() -> None:
     doc = build_index_document(
         version_local="7.6.12+rhlw.1",

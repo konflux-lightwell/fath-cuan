@@ -215,5 +215,10 @@ def index_create(
     if output == "-":
         click.echo(payload)
     else:
-        Path(output).write_text(payload + "\n")
+        out_path = Path(output)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(payload + "\n")
+        except OSError as e:
+            raise click.UsageError(f"could not write {output}: {e}") from e
         click.echo(f"Wrote {output}", err=True)

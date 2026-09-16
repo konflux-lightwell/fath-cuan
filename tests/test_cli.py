@@ -184,6 +184,28 @@ class TestIndexCreate:
         assert data["purls"] == ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"]
         assert data["vulns"] == []
 
+    def test_output_creates_missing_parent_dirs(self, tmp_path: Path) -> None:
+        out = tmp_path / "nested" / "sub" / "build-index.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--gav",
+                "org.example:artifact:1.0.0",
+                "--version-local",
+                "1.0.0.rhlw-00001",
+                "--output",
+                str(out),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert out.exists()
+        assert json.loads(out.read_text())["purls"] == [
+            "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
+        ]
+
     def test_both_purl_and_gav_errors(self) -> None:
         runner = CliRunner()
         result = runner.invoke(

@@ -148,14 +148,15 @@ def build_index_document(
             "history carries ADR-0005 Lightwell-Fix trailers, or drop "
             "--require-vuln / --b / --n for a clean build"
         )
-    # --require-vuln is an explicit "I fixed something" assertion; don't let it
-    # be satisfied by tier-4, which greps the branch name / last 50 commit
-    # messages and can surface an unrelated ID from history.
-    if require_vuln and resolved.tier == "regex":
+    # A remediation build asserts "I fixed something"; don't let that be
+    # satisfied by tier-4, which greps the branch name / last 50 commit messages
+    # and can surface an unrelated ID from history. This applies to any
+    # remediation build (--b/--n too), not just --require-vuln.
+    if remediation and resolved.tier == "regex":
         raise ValueError(
-            "--require-vuln will not accept vuln IDs discovered by the tier-4 "
-            "regex sweep of branch/commit history; pass --vuln explicitly or "
-            "add ADR-0005 Lightwell-Fix trailers to the remediation commit"
+            "a remediation build will not accept vuln IDs discovered by the "
+            "tier-4 regex sweep of branch/commit history; pass --vuln explicitly "
+            "or add ADR-0005 Lightwell-Fix trailers to the remediation commit"
         )
     # The upstream-vs-full remediation guard now lives on the BuildIndex model
     # (fires when b/n > 0); cover the --require-vuln-without-counts case here.
