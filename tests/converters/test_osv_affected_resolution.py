@@ -144,3 +144,119 @@ def test_novel_resolves_from_osidb_components(mock_osv: object, mock_nvd: object
         results = convert(InputDocument.from_dict(data), osidb_client=client)
     assert results[0].affected[0].package.name == "com.squareup.okio:okio"
     assert results[0].database_specific.lightwell.source == "novel-pipeline"
+
+
+def _osidb_cve(cve_id: str, components: list[str]) -> dict[str, object]:
+    """Build a minimal OSIDB `_get` payload for a CVE naming built components."""
+    return {
+        "count": 1,
+        "results": [
+            {
+                "vulnerability_id": "",
+                "cve_id": cve_id,
+                "title": "Flaw",
+                "impact": "HIGH",
+                "cwe_id": "CWE-79",
+                "cvss_scores": [],
+                "cve_description": "desc",
+                "comment_zero": "",
+                "references": [],
+                "affects": [],
+                "components": components,
+                "embargoed": False,
+                "visibility": "PUBLIC",
+            }
+        ],
+    }
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_cve_upstream_match_is_case_insensitive(mock_osv: object, mock_nvd: object) -> None:
+    # Upstream names the module with divergent casing; it must still resolve to
+    # the (lowercase) built coordinate rather than fall through to a strict drop.
+    mock_osv.return_value = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.SpringFramework:Spring-Core"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            }
+        ],
+    }
+    results = convert(InputDocument.from_dict(SPRING_GAV_INDEX))
+    assert len(results) == 1
+    assert results[0].affected[0].package.name == "org.springframework:spring-core"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_affected_versions_respect_upstream_version(mock_osv: object, mock_nvd: object) -> None:
+    # With an explicit upstreamVersion, the affected entry's versions[] must
+    # match the record id / backport_base_version, not the per-gav base.
+    mock_osv.return_value = _SPRING_CORE_UPSTREAM
+    data = {
+        "buildId": "B4",
+        "created": "2026-07-15T14:02:27+00:00",
+        "vulns": ["CVE-2025-41249"],
+        "upstreamVersion": "5.3.18",
+        "primaryGav": "org.springframework:spring-aop:5.3.18.RELEASE.rhlw-00010",
+        "gavs": [
+            "org.springframework:spring-aop:5.3.18.RELEASE.rhlw-00010",
+            "org.springframework:spring-core:5.3.18.RELEASE.rhlw-00010",
+        ],
+    }
+    results = convert(InputDocument.from_dict(data))
+    aff = results[0].affected[0]
+    assert aff.package.name == "org.springframework:spring-core"
+    assert aff.versions == ["5.3.18"]
+    assert results[0].database_specific.lightwell.backport_base_version == "5.3.18"
+    assert results[0].id.endswith("-5.3.18")
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_falls_through_to_osidb_when_upstream_names_unbuilt_module(
+    mock_osv: object, mock_nvd: object
+) -> None:
+    # Upstream names spring-core (not built here), but OSIDB names spring-web
+    # (which IS built). The record must be rescued via OSIDB, not dropped.
+    mock_osv.return_value = _SPRING_CORE_UPSTREAM
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    data = {
+        **SPRING_GAV_INDEX,
+        "gavs": [
+            "org.springframework:spring-aop:5.3.18.rhlw-00010",
+            "org.springframework:spring-web:5.3.18.rhlw-00010",
+        ],
+    }
+    with patch.object(client, "_get", return_value=_osidb_cve("CVE-2025-41249", ["spring-web"])):
+        results = convert(InputDocument.from_dict(data), osidb_client=client)
+    assert len(results) == 1
+    assert results[0].affected[0].package.name == "org.springframework:spring-web"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_ambiguous_bare_artifactid_fails_closed(mock_osv: object, mock_nvd: object) -> None:
+    # A bare OSIDB component 'widget' matches two built modules across different
+    # groups; the fuzzy fallback must NOT arbitrarily bind one. With no
+    # unambiguous match it falls back to the primary coordinate.
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    data = {
+        "buildId": "B5",
+        "created": "2026-07-15T14:02:27+00:00",
+        "vulns": ["LW-2099-0002"],
+        "primaryGav": "org.example:app:1.0.0.rhlw-00001",
+        "gavs": [
+            "org.example:app:1.0.0.rhlw-00001",
+            "org.a:widget:1.0.0.rhlw-00001",
+            "org.b:widget:1.0.0.rhlw-00001",
+        ],
+    }
+    novel = _osidb_cve("", ["widget"])
+    novel["results"][0]["vulnerability_id"] = "LW-2099-0002"  # type: ignore[index]
+    novel["results"][0]["cve_id"] = None  # type: ignore[index]
+    with patch.object(client, "_get", return_value=novel):
+        results = convert(InputDocument.from_dict(data), osidb_client=client)
+    names = {a.package.name for a in results[0].affected}
+    assert names == {"org.example:app"}  # fell back to primary, bound neither widget
