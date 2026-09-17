@@ -238,8 +238,17 @@ def _extract_introduced(
 
 
 def _norm_name(name: str, osv_ecosystem: str) -> str:
-    """Normalize a package name for cross-source matching (PEP 503 for PyPI)."""
-    return pep503_normalize(name) if osv_ecosystem == "PyPI" else name
+    """Normalize a package name for cross-source matching.
+
+    * **PyPI** — PEP 503 (lowercase + collapse ``-_.`` runs).
+    * **Maven** — casefold ``group:artifact``. Maven coordinates are
+      conventionally lowercase but not guaranteed to be, and an upstream
+      advisory's Maven name isn't guaranteed to use the same casing as our
+      gav-index entry. Casefolding both sides before the compare stops a mere
+      casing divergence from missing the match (which, for a CVE, would leave
+      ``strict`` True and drop an otherwise-correct record).
+    """
+    return pep503_normalize(name) if osv_ecosystem == "PyPI" else name.casefold()
 
 
 def _candidate_index(built_coords: list[Coordinate]) -> dict[str, Coordinate]:
@@ -281,14 +290,22 @@ def _resolve_affected(
     Returns ``(matched, strict)``:
 
     * **CVE (upstream advisory)** is authoritative. When it names affected
-      packages in this ecosystem, ``strict`` is True — the caller emits only the
-      matched built modules and DROPS the record if none match, rather than fall
-      back to the build's arbitrary primary coordinate (the ``primaryGav``
-      mis-attribution this fix exists to eliminate). Matching is exact.
+      packages in this ecosystem and at least one was built, ``strict`` is True
+      and only the matched built modules are emitted. If it names packages but
+      none were built, OSIDB ``components`` are consulted as a fallback before
+      giving up; only when neither source can place a built module does it
+      return ``([], strict=True)`` so the caller DROPS the record rather than
+      fall back to the build's arbitrary primary coordinate (the ``primaryGav``
+      mis-attribution this fix exists to eliminate). Upstream matching is exact
+      (case-normalized per ecosystem).
     * **Novel (OSIDB components)** is advisory but fuzzy (Red Hat component names
       do not always map 1:1 to Maven coordinates), so ``strict`` is False: a
-      match is used when found (incl. bare-artifactId), otherwise the caller
-      falls back.
+      match is used when found (incl. an unambiguous bare-artifactId), otherwise
+      the caller falls back.
+
+    A build with no enumerated modules (empty ``candidates``) is never strict —
+    it falls back to the primary coordinate, preserving prior behaviour when the
+    build manifest itself is unavailable.
     """
     if not candidates:
         return [], False
@@ -300,24 +317,49 @@ def _resolve_affected(
             key = _norm_name(str(n), osv_ecosystem)
             cand = candidates.get(key)
             if cand is None and fuzzy:
-                for cand_key, c in candidates.items():
-                    artifact = cand_key.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
-                    if key == artifact:
-                        cand = c
-                        break
+                # Bare-artifactId fallback (OSIDB component names don't always
+                # carry the groupId). Collect ALL built modules whose artifactId
+                # matches and fail closed when more than one does: a build
+                # producing both org.a:widget and org.b:widget must not silently
+                # bind a bare 'widget' component to whichever hashed first.
+                artifact_matches = [
+                    c
+                    for cand_key, c in candidates.items()
+                    if key == cand_key.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+                ]
+                if len(artifact_matches) == 1:
+                    cand = artifact_matches[0]
+                elif len(artifact_matches) > 1:
+                    logger.warning(
+                        "Ambiguous artifactId %r matches multiple built modules %s; "
+                        "refusing to bind (failing closed)",
+                        n,
+                        sorted(c.name for c in artifact_matches),
+                    )
             if cand is not None and cand.name not in seen:
                 seen.add(cand.name)
                 out.append(cand)
         return out
 
+    osidb_comps = [str(c) for c in (osidb_meta.get("components") or [])] if osidb_meta else []
+
     upstream_names = _upstream_affected_names(upstream, osv_ecosystem)
     if upstream_names:
-        return _collect(upstream_names, fuzzy=False), True
+        matched = _collect(upstream_names, fuzzy=False)
+        if matched:
+            return matched, True
+        # Upstream named affected module(s) but none were built here. Before
+        # committing to the strict drop, fall through to OSIDB — it may name the
+        # correct, buildable module even when the upstream coordinate doesn't
+        # match this build's gavs. Only if OSIDB also can't place it do we drop.
+        if osidb_comps:
+            osidb_matched = _collect(osidb_comps, fuzzy=True)
+            if osidb_matched:
+                return osidb_matched, False
+        return [], True
 
-    if osidb_meta:
-        comps = [str(c) for c in (osidb_meta.get("components") or [])]
-        if comps:
-            return _collect(comps, fuzzy=True), False
+    if osidb_comps:
+        return _collect(osidb_comps, fuzzy=True), False
 
     return [], False
 
@@ -392,23 +434,39 @@ def _extract_summary_details(
     return summary, details
 
 
-def _maven_built_coords(gavs: list[str]) -> list[Coordinate]:
-    """Resolve each gav-index GAV to a Coordinate (skipping unparseable entries)."""
+def _maven_built_coords(gavs: list[str], upstream_version: str | None = None) -> list[Coordinate]:
+    """Resolve each gav-index GAV to a Coordinate (skipping unparseable entries).
+
+    ``upstream_version`` is threaded through so every built module derives the
+    same ``base_version`` as the primary coordinate (and thus the record id /
+    ``backport_base_version``). Without it a module gav like
+    ``1.2.3.Final.rhlw-00001`` would yield ``versions=['1.2.3.Final']`` while
+    the id used ``upstreamVersion=1.2.3`` — an internally inconsistent document.
+    """
     coords: list[Coordinate] = []
     for gav in gavs:
         try:
-            coords.append(maven_coordinate(gav))
+            coords.append(maven_coordinate(gav, upstream_version))
         except ValueError:
             logger.debug("Skipping unparseable gav %r", gav)
     return coords
 
 
-def _purl_built_coords(purls: list[str], ecosystem: str) -> list[Coordinate]:
-    """Resolve each build-index PURL to a Coordinate (skipping unparseable entries)."""
+def _purl_built_coords(
+    purls: list[str], ecosystem: str, upstream_version: str | None = None
+) -> list[Coordinate]:
+    """Resolve each build-index PURL to a Coordinate (skipping unparseable entries).
+
+    ``upstream_version`` is threaded through for the same reason as
+    :func:`_maven_built_coords`: keep each affected entry's ``versions[]`` in
+    step with the record's ``backport_base_version``.
+    """
     coords: list[Coordinate] = []
     for purl in purls:
         try:
-            coords.append(coordinate_from_purl(purl, ecosystem=ecosystem))
+            coords.append(
+                coordinate_from_purl(purl, ecosystem=ecosystem, upstream_version=upstream_version)
+            )
         except ValueError:
             logger.debug("Skipping unparseable purl %r", purl)
     return coords
@@ -428,7 +486,7 @@ def convert(
     source priority and embargo semantics.
     """
     coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
-    built_coords = _maven_built_coords(doc.gavs)
+    built_coords = _maven_built_coords(doc.gavs, doc.upstream_version)
     return _build_records(
         coord,
         doc.vulns,
@@ -460,7 +518,7 @@ def convert_build_index(
         ecosystem=bi.ecosystem,
         upstream_version=bi.version.upstream,
     )
-    built_coords = _purl_built_coords(bi.purls, bi.ecosystem)
+    built_coords = _purl_built_coords(bi.purls, bi.ecosystem, bi.version.upstream)
     created = bi.created if bi.created else datetime.now(UTC)
     return _build_records(
         coord,
@@ -676,9 +734,20 @@ def _build_records(
         if matched:
             affected_entries = [_affected_entry(mc, upstream) for mc in matched]
         elif strict:
+            # Reached only when an authoritative source (upstream advisory, with
+            # OSIDB consulted as a fallback in _resolve_affected) named affected
+            # module(s) that this build demonstrably did not produce. Emitting the
+            # primary coordinate here would re-introduce the primaryGav
+            # mis-attribution this fix exists to eliminate (a false positive: a
+            # scanner told the wrong component is fixed). For a remediation feed a
+            # dropped record (false negative) is the safer failure, so we drop and
+            # log loudly rather than guess. Note: a build with NO enumerated
+            # modules is not strict (see _resolve_affected), so it still falls
+            # back to the primary rather than vanishing.
             logger.error(
-                "Skipping %s: upstream affected package(s) not among this build's "
-                "modules (built: %s); refusing to attribute to primary coordinate %s",
+                "Skipping %s: authoritative affected package(s) not among this "
+                "build's modules (built: %s); refusing to attribute to primary "
+                "coordinate %s",
                 cve_id,
                 sorted(candidates) or "<none>",
                 coordinates,
