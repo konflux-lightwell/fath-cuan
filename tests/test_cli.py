@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from fath_cuan import __version__
 from fath_cuan.cli import _build_jira_client, main
 from tests.conftest import SAMPLE_INPUT_DATA
 
@@ -14,7 +15,7 @@ def test_cli_version() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert __version__ in result.output
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
