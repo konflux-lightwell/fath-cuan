@@ -30,6 +30,7 @@ class InputDocument(BaseModel):
     gav_count: int = Field(default=0, alias="gavCount")
     gav_index_tag: str = Field(default="", alias="gavIndexTag")
     gavs: list[str] = Field(default_factory=list)
+    advisory_id: str | None = Field(default=None, alias="advisoryId")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InputDocument:

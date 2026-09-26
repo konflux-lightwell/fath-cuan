@@ -51,6 +51,16 @@ SAMPLE_MIXED_VULN_DATA = {
     "vulns": ["CVE-2024-25710", "LW-2026-0468"],
 }
 
+SAMPLE_ADVISORY_DATA = {
+    **SAMPLE_INPUT_DATA,
+    "advisoryId": "RHLW-2026-00042",
+}
+
+SAMPLE_ADVISORY_MULTI_CVE_DATA = {
+    **SAMPLE_MULTI_CVE_DATA,
+    "advisoryId": "RHLW-2026-00042",
+}
+
 
 @pytest.fixture
 def sample_json_file(tmp_path: Path) -> Path:

@@ -29,7 +29,7 @@ def test_cli_process_osv_to_stdout(mock_osv: object, mock_nvd: object) -> None:
     )
     assert result.exit_code == 0
     data = json.loads(result.output)
-    assert data["schema_version"] == "1.6.8"
+    assert data["schema_version"] == "1.9.0"
     assert data["id"] == "x_RHLW-CVE-2024-25710-1.0.0"
 
 

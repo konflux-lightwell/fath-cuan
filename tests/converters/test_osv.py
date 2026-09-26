@@ -14,6 +14,8 @@ from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.input import InputDocument
 from fath_cuan.osidb import OsidbClient
 from tests.conftest import (
+    SAMPLE_ADVISORY_DATA,
+    SAMPLE_ADVISORY_MULTI_CVE_DATA,
     SAMPLE_DUPLICATE_CVE_DATA,
     SAMPLE_INPUT_DATA,
     SAMPLE_LW_VULN_DATA,
@@ -744,3 +746,229 @@ def test_jira_severity_non_cvss_returns_empty() -> None:
 
 def test_jira_severity_empty_returns_empty() -> None:
     assert _jira_severity("") == []
+
+
+# ---------------------------------------------------------------------------
+# New advisory path (advisory_id present)
+# ---------------------------------------------------------------------------
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_single_cve_new_format(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    r = results[0]
+    assert r.id == "RHLW-2026-00042"
+    assert r.schema_version == "1.9.0"
+    assert r.upstream == ["CVE-2024-25710"]
+    assert r.aliases is None
+    assert len(r.affected) == 2
+    assert r.affected[0].package.ecosystem == "Maven"
+    assert r.affected[1].package.ecosystem == "Red Hat Lightwell:Maven"
+    assert r.affected[0].database_specific is not None
+    assert r.affected[1].database_specific is None
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_multi_cve_new_format(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.side_effect = [
+        {
+            "severity": [
+                {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}
+            ],
+            "aliases": ["CVE-2024-25710", "GHSA-aaaa-bbbb-cccc"],
+            "summary": "First CVE summary",
+        },
+        {
+            "severity": [
+                {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+            ],
+            "aliases": ["CVE-2024-26308", "GHSA-dddd-eeee-ffff"],
+            "summary": "Second CVE summary",
+        },
+    ]
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    r = results[0]
+    assert r.id == "RHLW-2026-00042"
+    assert r.upstream is not None
+    assert "CVE-2024-25710" in r.upstream
+    assert "CVE-2024-26308" in r.upstream
+    assert len(r.severity) >= 1
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_upstream_ordering(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.side_effect = [
+        {"aliases": ["CVE-2024-25710", "GHSA-zzzz-xxxx-yyyy"]},
+        {"aliases": ["CVE-2024-26308", "GHSA-aaaa-bbbb-cccc"]},
+    ]
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
+    results = convert(doc)
+    ups = results[0].upstream
+    assert ups is not None
+    cve_section = [u for u in ups if u.startswith("CVE-")]
+    ghsa_section = [u for u in ups if u.startswith("GHSA-")]
+    assert ups == cve_section + ghsa_section
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_versionless_purl(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    purl = results[0].affected[0].package.purl
+    assert purl is not None
+    assert "@" not in purl
+    assert purl == "pkg:maven/org.example/artifact"
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_references_public_only(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.return_value = {
+        "references": [
+            {"url": "https://github.com/example/repo/commit/abc", "type": "WEB"},
+            {"url": "https://gitlab.cee.redhat.com/internal/repo/-/issues/1", "type": "WEB"},
+            {"url": "https://nvd.nist.gov/vuln/detail/CVE-2024-25710", "type": "ADVISORY"},
+        ],
+    }
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    refs = results[0].references
+    assert refs[0].type == "ADVISORY"
+    assert "packages.redhat.com/lightwell/advisories" in refs[0].url
+    urls = [r.url for r in refs]
+    assert not any("gitlab.cee.redhat.com" in u for u in urls)
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_summary_and_details(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    r = results[0]
+    assert r.summary == "Lightwell Security Advisory: artifact 1.0.0.rhlw-00001"
+    assert "Red Hat Lightwell has released" in r.details
+    assert "drop-in replacement" in r.details
+    assert "Maven Central" in r.details
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_per_affected_database_specific(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    aff = results[0].affected[0]
+    assert aff.database_specific is not None
+    lw = aff.database_specific.lightwell
+    assert lw.backport_base_version == "1.0.0"
+    assert lw.remediated_version == "1.0.0.rhlw-00001"
+    assert lw.repository_url == "https://packages.redhat.com/lightwell/java/remediated/"
+    assert lw.source == "pnc-build"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_level_database_specific(mock_osv: object, mock_nvd: object) -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    osidb_resp = {
+        "count": 1,
+        "results": [
+            {
+                "vulnerability_id": "",
+                "cve_id": "CVE-2024-25710",
+                "title": "Test",
+                "impact": "HIGH",
+                "cwe_id": "CWE-400",
+                "cvss_scores": [],
+                "cve_description": "desc",
+                "comment_zero": "",
+                "references": [],
+                "affects": [],
+                "components": [],
+                "embargoed": False,
+                "visibility": "PUBLIC",
+            }
+        ],
+    }
+    with patch.object(client, "_get", return_value=osidb_resp):
+        doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+        results = convert(doc, osidb_client=client)
+    db = results[0].database_specific
+    from fath_cuan.models.osv import AdvisoryDatabaseSpecific
+
+    assert isinstance(db, AdvisoryDatabaseSpecific)
+    assert "packages.redhat.com/lightwell/advisories" in (db.lightwell.csaf_advisory or "")
+    assert "CWE-400" in db.lightwell.cwe_ids
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_legacy_fallback(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    assert results[0].id.startswith("x_RHLW-")
+    assert results[0].aliases == ["CVE-2024-25710"]
+    assert results[0].upstream is None
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_embargo_with_advisory_id(mock_osv: object, mock_nvd: object) -> None:
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc, embargo=True)
+    assert len(results) == 1
+    r = results[0]
+    assert r.id.startswith("x_RHLW-")
+    assert r.aliases == []
+    assert r.database_specific.lightwell.embargo_status == "pre-disclosure"
+    mock_osv.assert_not_called()
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+def test_unresolvable_cve_excluded(mock_nvd: object, mock_osv: object) -> None:
+    mock_osv.side_effect = [
+        {
+            "affected": [
+                {
+                    "package": {
+                        "ecosystem": "Maven",
+                        "name": "com.unrelated:unbuilt",
+                    },
+                    "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+                }
+            ],
+            "aliases": ["CVE-2024-25710"],
+            "summary": "First",
+        },
+        {
+            "affected": [
+                {
+                    "package": {
+                        "ecosystem": "Maven",
+                        "name": "org.example:artifact",
+                    },
+                    "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+                }
+            ],
+            "aliases": ["CVE-2024-26308"],
+            "summary": "Second",
+        },
+    ]
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
+    results = convert(doc)
+    assert len(results) == 1
+    r = results[0]
+    assert r.upstream is not None
+    assert "CVE-2024-25710" in r.upstream
+    assert "CVE-2024-26308" in r.upstream
+    assert len(r.affected) == 2
+    assert r.affected[0].package.name == "org.example:artifact"

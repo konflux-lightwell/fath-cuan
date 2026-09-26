@@ -276,3 +276,32 @@ def test_pypi_created_offset_converted_to_utc(mock_osv: object, mock_nvd: object
     bi = BuildIndex.from_dict({**PYPI_BUILD_INDEX, "created": "2026-07-15T14:02:27+05:30"})
     results = convert_build_index(bi)
     assert results[0].published == "2026-07-15T08:32:27Z"
+
+
+# ---------------------------------------------------------------------------
+# New advisory path (advisory_id) — PyPI
+# ---------------------------------------------------------------------------
+
+PYPI_ADVISORY_BUILD_INDEX = {
+    **PYPI_BUILD_INDEX,
+    "advisoryId": "RHLW-2026-00099",
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_pypi_dual_ecosystem(mock_osv: object, mock_nvd: object) -> None:
+    bi = BuildIndex.from_dict(PYPI_ADVISORY_BUILD_INDEX)
+    results = convert_build_index(bi)
+    assert len(results) == 1
+    r = results[0]
+    assert r.id == "RHLW-2026-00099"
+    assert len(r.affected) == 2
+    assert r.affected[0].package.ecosystem == "PyPI"
+    assert r.affected[1].package.ecosystem == "Red Hat Lightwell:PyPI"
+    purl = r.affected[0].package.purl
+    assert purl is not None
+    assert "@" not in purl
+    assert r.affected[0].database_specific is not None
+    lw = r.affected[0].database_specific.lightwell
+    assert lw.repository_url == "https://packages.redhat.com/lightwell/python/remediated/"

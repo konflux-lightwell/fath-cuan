@@ -49,6 +49,7 @@ class BuildIndex(BaseModel):
     # published/modified timestamp. Optional; the converter defaults to the
     # current UTC time when absent.
     created: datetime | None = None
+    advisory_id: str | None = Field(default=None, alias="advisoryId")
 
     @model_validator(mode="before")
     @classmethod

@@ -260,3 +260,53 @@ def test_ambiguous_bare_artifactid_fails_closed(mock_osv: object, mock_nvd: obje
         results = convert(InputDocument.from_dict(data), osidb_client=client)
     names = {a.package.name for a in results[0].affected}
     assert names == {"org.example:app"}  # fell back to primary, bound neither widget
+
+
+# ---------------------------------------------------------------------------
+# New advisory path — multiple CVEs affecting different modules
+# ---------------------------------------------------------------------------
+
+MULTI_MODULE_ADVISORY = {
+    "buildId": "B6",
+    "created": "2026-07-15T14:02:27+00:00",
+    "vulns": ["CVE-2025-00001", "CVE-2025-00002"],
+    "primaryGav": "ch.qos.logback:logback-access:1.2.11.rhlw-00001",
+    "gavs": [
+        "ch.qos.logback:logback-access:1.2.11.rhlw-00001",
+        "ch.qos.logback:logback-classic:1.2.11.rhlw-00001",
+        "ch.qos.logback:logback-core:1.2.11.rhlw-00001",
+    ],
+    "advisoryId": "RHLW-2026-00050",
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_multi_cve_different_modules(mock_osv: object, mock_nvd: object) -> None:
+    mock_osv.side_effect = [
+        {
+            "affected": [
+                {
+                    "package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-classic"},
+                    "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+                }
+            ],
+            "summary": "Classic vuln",
+        },
+        {
+            "affected": [
+                {
+                    "package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-core"},
+                    "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+                }
+            ],
+            "summary": "Core vuln",
+        },
+    ]
+    results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY))
+    assert len(results) == 1
+    names = [a.package.name for a in results[0].affected]
+    assert "ch.qos.logback:logback-classic" in names
+    assert "ch.qos.logback:logback-core" in names
+    # 2 modules * 2 ecosystem entries each = 4
+    assert len(results[0].affected) == 4
