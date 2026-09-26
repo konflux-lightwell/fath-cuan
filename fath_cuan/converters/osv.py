@@ -7,6 +7,8 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
+from packageurl import PackageURL
+
 from fath_cuan.ecosystems import (
     Coordinate,
     coordinate_from_purl,
@@ -20,6 +22,8 @@ from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
 from fath_cuan.models.osv import (
+    AdvisoryDatabaseSpecific,
+    AdvisoryLevelMeta,
     AffectedEntry,
     Credit,
     DatabaseSpecific,
@@ -47,6 +51,25 @@ _ADVISORY_PATTERNS = (
     "security.netapp.com/advisory/",
     "access.redhat.com/errata/",
     "access.redhat.com/security/cve/",
+)
+
+_ADVISORY_URL_TEMPLATE = "https://packages.redhat.com/lightwell/advisories/{}.json"
+
+_REPOSITORY_URLS: dict[str, str] = {
+    "maven": "https://packages.redhat.com/lightwell/java/remediated/",
+    "pypi": "https://packages.redhat.com/lightwell/python/remediated/",
+}
+
+_REGISTRY_NAMES: dict[str, str] = {
+    "maven": "Maven Central",
+    "pypi": "PyPI",
+}
+
+_INTERNAL_URL_PATTERNS = (
+    "gitlab.cee.redhat.com",
+    "issues.redhat.com",
+    "bugzilla.redhat.com",
+    "jira.redhat.com",
 )
 
 
@@ -472,6 +495,249 @@ def _purl_built_coords(
     return coords
 
 
+def _is_internal_url(url: str) -> bool:
+    """Return True for URLs belonging to internal Red Hat infrastructure."""
+    return any(p in url for p in _INTERNAL_URL_PATTERNS)
+
+
+def _classify_advisory_reference(url: str, original_type: str) -> str:
+    """Classify a reference URL for the per-release (advisory) path.
+
+    Commits become FIX, issue tracker links become REPORT, everything else
+    keeps its original type unless it would be ADVISORY (reserved for the
+    advisory's own URL).
+    """
+    if "/commit/" in url or "/commits/" in url:
+        return "FIX"
+    if "/issues/" in url:
+        return "REPORT"
+    if original_type == "ADVISORY":
+        return "WEB"
+    return original_type
+
+
+def _versionless_purl(coord: Coordinate) -> str:
+    """Construct a versionless Package URL from a Coordinate."""
+    if coord.ecosystem == "maven":
+        group, artifact = coord.name.split(":")
+        return PackageURL(type="maven", namespace=group, name=artifact).to_string()
+    if coord.ecosystem == "pypi":
+        return PackageURL(type="pypi", name=coord.name).to_string()
+    raise ValueError(f"Unsupported ecosystem for versionless PURL: {coord.ecosystem}")
+
+
+def _synthesize_details(
+    coord: Coordinate,
+    per_cve_descriptions: list[tuple[str, str]],
+) -> str:
+    """Build the ``details`` text for a per-release advisory record."""
+    name = coord.name
+    version = coord.version
+    base_version = coord.base_version
+    cve_ids = [cid for cid, _ in per_cve_descriptions]
+
+    if len(cve_ids) == 1:
+        fix_desc = "a backported security fix"
+    elif len(cve_ids) == 2:
+        fix_desc = f"backported fixes for {cve_ids[0]} and {cve_ids[1]}"
+    else:
+        fix_desc = "backported fixes for " + ", ".join(cve_ids[:-1]) + f", and {cve_ids[-1]}"
+
+    lead = f"Red Hat Lightwell has released {name} {version} with {fix_desc}."
+
+    cve_descs = []
+    for cve_id, desc in per_cve_descriptions:
+        if desc:
+            cve_descs.append(f"{cve_id}: {desc}")
+
+    registry = _REGISTRY_NAMES.get(coord.ecosystem, "the upstream registry")
+    dropin = (
+        f"This patched artifact is a drop-in replacement for {name} {base_version} from {registry}."
+    )
+
+    return "\n\n".join([lead, *cve_descs, dropin])
+
+
+def _build_advisory_record(
+    advisory_id: str,
+    coord: Coordinate,
+    vulns: list[str],
+    published: str,
+    modified: str,
+    candidates: dict[str, Coordinate],
+    osidb_client: OsidbClient | None,
+) -> list[OSVDocument]:
+    """Build a single per-release OSV record for all CVEs (new advisory path)."""
+    osv_ecosystem = coord.osv_ecosystem
+
+    cve_ids: list[str] = []
+    ghsa_ids: list[str] = []
+    all_cwe_ids: list[str] = []
+    best_severity: list[Severity] = []
+    per_cve_descriptions: list[tuple[str, str]] = []
+    all_refs: list[Reference] = []
+    resolved_modules: list[Coordinate] = []
+    seen_modules: set[str] = set()
+    upstream_cache: dict[str, dict[str, Any] | None] = {}
+
+    seen_cves: set[str] = set()
+    for cve_id in vulns:
+        if cve_id in seen_cves:
+            continue
+        seen_cves.add(cve_id)
+        cve_ids.append(cve_id)
+
+        osidb_meta: dict[str, Any] | None = None
+        if osidb_client and osidb_client.available:
+            flaw = osidb_client.get_flaw(cve_id)
+            if flaw:
+                osidb_meta = extract_osidb_metadata(flaw)
+
+        upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
+        upstream_cache[cve_id] = upstream
+
+        nvd: dict[str, Any] | None = None
+
+        # Collect GHSA aliases from upstream
+        if upstream:
+            for alias in upstream.get("aliases", []):
+                if alias.startswith("GHSA-") and alias not in ghsa_ids:
+                    ghsa_ids.append(alias)
+
+        # CWE IDs from OSIDB
+        if osidb_meta:
+            cwe = osidb_meta.get("cwe_id", "")
+            if cwe and cwe not in all_cwe_ids:
+                all_cwe_ids.append(cwe)
+
+        # Severity: keep the first non-empty set found
+        sev: list[Severity] = []
+        if osidb_meta:
+            for cv in osidb_meta.get("cvss_vectors", []):
+                sev.append(Severity(type=cv["type"], score=cv["score"]))
+        if not sev:
+            nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
+            sev = _extract_severity(upstream or {}, nvd)
+        if sev and not best_severity:
+            best_severity = sev
+
+        # Per-CVE description (best available)
+        desc = ""
+        if osidb_meta:
+            desc = osidb_meta.get("description", "") or osidb_meta.get("title", "")
+        if not desc and upstream:
+            desc = upstream.get("summary", "") or upstream.get("details", "")
+        if not desc:
+            if nvd is None and cve_id.startswith("CVE-"):
+                nvd = _fetch_nvd(cve_id)
+            if nvd:
+                for d in nvd.get("descriptions", []):
+                    if d.get("lang") == "en":
+                        desc = d.get("value", "")
+                        break
+        per_cve_descriptions.append((cve_id, desc))
+
+        # Public references from upstream (filtered)
+        if upstream:
+            for r in upstream.get("references", []):
+                url = r.get("url", "")
+                if url and not _is_internal_url(url):
+                    ref_type = _classify_advisory_reference(url, r.get("type", "WEB"))
+                    all_refs.append(Reference(url=url, type=ref_type))
+        nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+        all_refs.append(Reference(url=nvd_url, type="WEB"))
+
+        # Module resolution
+        matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
+        if matched:
+            for mc in matched:
+                if mc.name not in seen_modules:
+                    seen_modules.add(mc.name)
+                    resolved_modules.append(mc)
+        elif strict:
+            logger.warning("Skipping unresolvable %s in advisory %s", cve_id, advisory_id)
+        else:
+            if coord.name not in seen_modules:
+                seen_modules.add(coord.name)
+                resolved_modules.append(coord)
+
+    # upstream IDs: CVEs first, then GHSAs, deduplicated
+    all_upstream_ids = list(dict.fromkeys(cve_ids + ghsa_ids))
+
+    # Affected entries: 2 per resolved module (plain + Lightwell ecosystem)
+    affected: list[AffectedEntry] = []
+    for mc in resolved_modules:
+        vl_purl = _versionless_purl(mc)
+        repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
+
+        introduced = "0"
+        for _cve_id, ups in upstream_cache.items():
+            if ups:
+                v = _extract_introduced(ups, mc.name, mc.osv_ecosystem)
+                if v != "0":
+                    introduced = v
+                    break
+
+        affected.append(
+            AffectedEntry(
+                package=Package(ecosystem=mc.osv_ecosystem, name=mc.name, purl=vl_purl),
+                versions=[mc.base_version],
+                ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
+                database_specific=DatabaseSpecific(
+                    lightwell=LightwellMeta(
+                        source="pnc-build",
+                        backport_base_version=mc.base_version,
+                        remediated_version=mc.version,
+                        repository_url=repo_url,
+                    )
+                ),
+            )
+        )
+        affected.append(
+            AffectedEntry(
+                package=Package(ecosystem=f"Red Hat Lightwell:{mc.osv_ecosystem}", name=mc.name),
+                ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
+            )
+        )
+
+    # References: ADVISORY first, then deduplicated per-CVE refs
+    advisory_url = _ADVISORY_URL_TEMPLATE.format(advisory_id)
+    refs: list[Reference] = [Reference(url=advisory_url, type="ADVISORY")]
+    seen_urls: set[str] = {advisory_url}
+    for r in all_refs:
+        if r.url not in seen_urls:
+            seen_urls.add(r.url)
+            refs.append(r)
+
+    # Summary and details
+    short_name = coord.name.split(":")[-1]
+    summary = f"Lightwell Security Advisory: {short_name} {coord.version}"
+    details = _synthesize_details(coord, per_cve_descriptions)
+
+    db_specific = AdvisoryDatabaseSpecific(
+        lightwell=AdvisoryLevelMeta(
+            csaf_advisory=advisory_url,
+            cwe_ids=all_cwe_ids,
+        )
+    )
+
+    record = OSVDocument(
+        id=advisory_id,
+        published=published,
+        modified=modified,
+        severity=best_severity,
+        references=refs,
+        summary=summary,
+        details=details,
+        upstream=all_upstream_ids,
+        affected=affected,
+        credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+        database_specific=db_specific,
+    )
+    logger.info("Generated advisory record %s with %d CVEs", advisory_id, len(cve_ids))
+    return [record]
+
+
 def convert(
     doc: InputDocument,
     embargo: bool = False,
@@ -496,6 +762,7 @@ def convert(
         jira_client=jira_client,
         redact_embargoed=redact_embargoed,
         built_coords=built_coords,
+        advisory_id=doc.advisory_id,
     )
 
 
@@ -529,6 +796,7 @@ def convert_build_index(
         jira_client=jira_client,
         redact_embargoed=redact_embargoed,
         built_coords=built_coords,
+        advisory_id=bi.advisory_id,
     )
 
 
@@ -541,28 +809,13 @@ def _build_records(
     jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
     built_coords: list[Coordinate] | None = None,
+    advisory_id: str | None = None,
 ) -> list[OSVDocument]:
     """Build OSV records for a resolved coordinate and vulnerability list.
 
-    The affected package for each vuln is resolved to the module actually
-    vulnerable — CVEs from the upstream advisory, novels from OSIDB — and matched
-    against ``built_coords`` (the modules this build produced). This replaces the
-    old behaviour of stamping every vuln with the build's arbitrary primary
-    coordinate. When no authoritative source names an affected package, it falls
-    back to ``coord`` (the primary). A CVE whose upstream-affected module is not
-    among ``built_coords`` is DROPPED rather than mis-attributed.
-
-    Matches the Lightwell OSV format specification. Data source priority:
-    1. OSIDB (structured vulnerability metadata, when available)
-    2. Upstream OSV (osv.dev)
-    3. NVD (fallback for missing summary/severity)
-    4. JIRA (fallback for Lightwell identifiers)
-
-    The Pulp OSV repo is currently protected by a content guard and is
-    not public. All novel findings are embargoed by default within the
-    protected feed. Set redact_embargoed=True to produce redacted stubs
-    for embargoed flaws — use this when generating files destined for a
-    public or less-trusted distribution.
+    When ``advisory_id`` is set and neither ``embargo`` nor
+    ``redact_embargoed`` is active, the new per-release path produces a
+    single record for all CVEs. Otherwise the legacy per-CVE loop runs.
     """
     coordinates = coord.name
     version = coord.version
@@ -570,14 +823,22 @@ def _build_records(
     osv_ecosystem = coord.osv_ecosystem
     logger.debug("Converting %s (%s) with %d vulns", coordinates, version, len(vulns))
 
-    # Convert to UTC before stamping the trailing 'Z' — a producer-supplied
-    # non-UTC offset must be shifted, not silently relabelled as UTC. Treat a
-    # naive datetime as already-UTC.
     created_utc = created if created.tzinfo else created.replace(tzinfo=UTC)
     published = created_utc.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
 
     candidates = _candidate_index(built_coords or [])
+
+    if advisory_id and not embargo and not redact_embargoed:
+        return _build_advisory_record(
+            advisory_id,
+            coord,
+            vulns,
+            published,
+            modified,
+            candidates,
+            osidb_client,
+        )
 
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()
