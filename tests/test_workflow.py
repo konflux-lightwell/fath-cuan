@@ -26,7 +26,7 @@ def test_process_osv_has_correct_id(mock_osv: object, mock_nvd: object) -> None:
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_process_osv_has_schema_version(mock_osv: object, mock_nvd: object) -> None:
     result = process_osv(SAMPLE_INPUT_DATA)
-    assert result[0]["schema_version"] == "1.6.8"
+    assert result[0]["schema_version"] == "1.9.0"
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
