@@ -283,30 +283,28 @@ MULTI_MODULE_ADVISORY = {
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv")
 def test_multi_cve_different_modules(mock_osv: object, mock_nvd: object) -> None:
-    mock_osv.side_effect = [
-        {
-            "affected": [
-                {
-                    "package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-classic"},
-                    "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
-                }
-            ],
-            "summary": "Classic vuln",
-        },
-        {
-            "affected": [
-                {
-                    "package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-core"},
-                    "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
-                }
-            ],
-            "summary": "Core vuln",
-        },
-    ]
+    classic = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-classic"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            }
+        ],
+        "summary": "Classic vuln",
+    }
+    core = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-core"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            }
+        ],
+        "summary": "Core vuln",
+    }
+    mock_osv.side_effect = [classic, core, classic, core]
     results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY))
-    assert len(results) == 1
-    names = [a.package.name for a in results[0].affected]
+    advisory = results[0]
+    names = [a.package.name for a in advisory.affected]
     assert "ch.qos.logback:logback-classic" in names
     assert "ch.qos.logback:logback-core" in names
-    # 2 modules * 2 ecosystem entries each = 4
-    assert len(results[0].affected) == 4
+    assert len(advisory.affected) == 4

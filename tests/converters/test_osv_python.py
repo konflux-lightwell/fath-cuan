@@ -293,7 +293,7 @@ PYPI_ADVISORY_BUILD_INDEX = {
 def test_pypi_dual_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     bi = BuildIndex.from_dict(PYPI_ADVISORY_BUILD_INDEX)
     results = convert_build_index(bi)
-    assert len(results) == 1
+    assert len(results) == 2
     r = results[0]
     assert r.id == "RHLW-2026-00099"
     assert len(r.affected) == 2

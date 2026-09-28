@@ -900,8 +900,9 @@ def _build_records(
 
     candidates = _candidate_index(built_coords or [])
 
+    advisory_records: list[OSVDocument] = []
     if advisory_id and not embargo and not redact_embargoed:
-        return _build_advisory_record(
+        advisory_records = _build_advisory_record(
             advisory_id,
             coord,
             vulns,
@@ -1109,5 +1110,9 @@ def _build_records(
         )
         records.append(record)
 
+    if advisory_id and records:
+        for r in records:
+            r.related = [advisory_id]
+
     logger.info("Generated %d OSV records", len(records))
-    return records
+    return advisory_records + records

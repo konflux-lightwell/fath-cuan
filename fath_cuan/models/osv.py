@@ -80,6 +80,7 @@ class OSVDocument(BaseModel):
     details: str = ""
     aliases: list[str] | None = None
     upstream: list[str] | None = None
+    related: list[str] | None = None
     affected: list[AffectedEntry]
     credits: list[Credit] = Field(default_factory=list)
     database_specific: DatabaseSpecific | AdvisoryDatabaseSpecific
