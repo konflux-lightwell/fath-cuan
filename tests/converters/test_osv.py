@@ -868,7 +868,9 @@ def test_per_affected_database_specific(mock_osv: object, mock_nvd: object) -> N
     assert aff.database_specific is not None
     lw = aff.database_specific.lightwell
     assert lw.backport_base_version == "1.0.0"
-    assert lw.remediated_version == "1.0.0.rhlw-00001"
+    assert lw.upstream_base == "1.0.0"
+    assert lw.upstream_purl == "pkg:maven/org.example/artifact@1.0.0"
+    assert lw.remediation_build == "rhlw-00001"
     assert lw.repository_url == "https://packages.redhat.com/lightwell/java/remediated/"
     assert lw.source == "pnc-build"
 
