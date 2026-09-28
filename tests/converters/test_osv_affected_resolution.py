@@ -301,7 +301,10 @@ def test_multi_cve_different_modules(mock_osv: object, mock_nvd: object) -> None
         ],
         "summary": "Core vuln",
     }
-    mock_osv.side_effect = [classic, core, classic, core]
+    mock_osv.side_effect = lambda cve_id: {
+        "CVE-2025-00001": classic,
+        "CVE-2025-00002": core,
+    }.get(cve_id)
     results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY))
     advisory = results[0]
     names = [a.package.name for a in advisory.affected]

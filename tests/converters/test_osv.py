@@ -787,7 +787,10 @@ def test_multi_cve_new_format(mock_nvd: object, mock_osv: object) -> None:
         "aliases": ["CVE-2024-26308", "GHSA-dddd-eeee-ffff"],
         "summary": "Second CVE summary",
     }
-    mock_osv.side_effect = [cve1, cve2, cve1, cve2]
+    mock_osv.side_effect = lambda cve_id: {
+        "CVE-2024-25710": cve1,
+        "CVE-2024-26308": cve2,
+    }.get(cve_id)
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
     results = convert(doc)
     assert len(results) == 3
@@ -804,7 +807,10 @@ def test_multi_cve_new_format(mock_nvd: object, mock_osv: object) -> None:
 def test_upstream_ordering(mock_nvd: object, mock_osv: object) -> None:
     d1 = {"aliases": ["CVE-2024-25710", "GHSA-zzzz-xxxx-yyyy"]}
     d2 = {"aliases": ["CVE-2024-26308", "GHSA-aaaa-bbbb-cccc"]}
-    mock_osv.side_effect = [d1, d2, d1, d2]
+    mock_osv.side_effect = lambda cve_id: {
+        "CVE-2024-25710": d1,
+        "CVE-2024-26308": d2,
+    }.get(cve_id)
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
     results = convert(doc)
     ups = results[0].upstream
@@ -958,12 +964,15 @@ def test_unresolvable_cve_excluded(mock_nvd: object, mock_osv: object) -> None:
         "aliases": ["CVE-2024-26308"],
         "summary": "Second",
     }
-    mock_osv.side_effect = [unbuilt, built, unbuilt, built]
+    mock_osv.side_effect = lambda cve_id: {
+        "CVE-2024-25710": unbuilt,
+        "CVE-2024-26308": built,
+    }.get(cve_id)
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
     results = convert(doc)
     r = results[0]
     assert r.upstream is not None
-    assert "CVE-2024-25710" in r.upstream
+    assert "CVE-2024-25710" not in r.upstream
     assert "CVE-2024-26308" in r.upstream
     assert len(r.affected) == 2
     assert r.affected[0].package.name == "org.example:artifact"

@@ -20,6 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from fath_cuan.ecosystems import SUPPORTED_ECOSYSTEMS, parse_purl
 
+_VULN_ID_PATTERNS = [
+    re.compile(r"^CVE-\d{4}-\d{4,}$"),
+    re.compile(r"^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$"),
+    re.compile(r"^LW-\d{4}-\d{4,}$"),
+]
+
 
 class VersionInfo(BaseModel):
     """Decomposed version metadata for a remediated build."""
@@ -51,6 +57,17 @@ class BuildIndex(BaseModel):
     # current UTC time when absent.
     created: datetime | None = None
     advisory_id: str | None = Field(default=None, alias="advisoryId")
+
+    @field_validator("vulns")
+    @classmethod
+    def _valid_vuln_ids(cls, value: list[str]) -> list[str]:
+        for v in value:
+            if not any(p.fullmatch(v) for p in _VULN_ID_PATTERNS):
+                raise ValueError(
+                    f"vuln id '{v}' must match CVE-YYYY-NNNN+, "
+                    f"GHSA-xxxx-xxxx-xxxx, or LW-YYYY-NNNN+"
+                )
+        return value
 
     @field_validator("advisory_id")
     @classmethod

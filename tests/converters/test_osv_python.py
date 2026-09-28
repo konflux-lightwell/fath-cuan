@@ -296,9 +296,9 @@ def test_pypi_dual_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     assert len(results) == 2
     r = results[0]
     assert r.id == "RHLW-2026-00099"
-    assert len(r.affected) == 2
+    # PyPI not yet registered with osv-schema; only plain entry emitted.
+    assert len(r.affected) == 1
     assert r.affected[0].package.ecosystem == "PyPI"
-    assert r.affected[1].package.ecosystem == "Red Hat Lightwell:PyPI"
     purl = r.affected[0].package.purl
     assert purl is not None
     assert "@" not in purl
@@ -309,7 +309,3 @@ def test_pypi_dual_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     plain_events = r.affected[0].ranges[0].events
     assert len(plain_events) == 1
     assert plain_events[0].introduced == "0"
-    # Lightwell:PyPI entry carries the fixed event.
-    lw_events = r.affected[1].ranges[0].events
-    assert len(lw_events) == 2
-    assert lw_events[1].fixed is not None

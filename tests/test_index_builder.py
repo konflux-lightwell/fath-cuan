@@ -215,7 +215,7 @@ def test_migrate_basic() -> None:
 
 
 def test_migrate_derives_b_n_from_vuln_prefixes() -> None:
-    src = {**SAMPLE_INPUT_DATA, "vulns": ["CVE-2024-1", "CVE-2024-2", "LW-2026-0001"]}
+    src = {**SAMPLE_INPUT_DATA, "vulns": ["CVE-2024-0001", "CVE-2024-0002", "LW-2026-0001"]}
     doc = migrate_document(src)
     assert doc["version"]["b"] == 2
     assert doc["version"]["n"] == 1

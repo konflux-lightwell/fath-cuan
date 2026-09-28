@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import urllib.error
@@ -9,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from packageurl import PackageURL
+from packaging.version import InvalidVersion, Version
 
 from fath_cuan.ecosystems import (
     Coordinate,
@@ -91,7 +93,7 @@ _base_version = maven_base_version
 
 def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
     """Fetch upstream OSV record for a CVE from osv.dev."""
-    url = f"{_OSV_API}/{cve_id}"
+    url = f"{_OSV_API}/{urllib.parse.quote(cve_id, safe='')}"
     logger.debug("Fetching upstream OSV for %s", cve_id)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
@@ -105,7 +107,7 @@ def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
 
 def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
     """Fetch CVE data from NVD as a fallback for missing summary/severity."""
-    url = f"{_NVD_API}?cveId={cve_id}"
+    url = f"{_NVD_API}?cveId={urllib.parse.quote(cve_id, safe='')}"
     logger.debug("Fetching NVD data for %s", cve_id)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
@@ -571,6 +573,29 @@ def _synthesize_details(
     return "\n\n".join([lead, *cve_descs, dropin])
 
 
+_REGISTERED_LIGHTWELL_ECOSYSTEMS = {"Maven"}
+
+
+def _version_key(v: str) -> tuple[int, Any]:
+    """Sort key: parsed Version when possible, lexicographic fallback."""
+    try:
+        return (0, Version(v))
+    except InvalidVersion:
+        return (1, v)
+
+
+def _prefetch_cve(cve_id: str, osidb_client: OsidbClient | None) -> dict[str, Any]:
+    """Fetch OSIDB, upstream OSV, and NVD data for a single CVE."""
+    osidb_meta: dict[str, Any] | None = None
+    if osidb_client and osidb_client.available:
+        flaw = osidb_client.get_flaw(cve_id)
+        if flaw:
+            osidb_meta = extract_osidb_metadata(flaw)
+    upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
+    nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
+    return {"osidb_meta": osidb_meta, "upstream": upstream, "nvd": nvd}
+
+
 def _build_advisory_record(
     advisory_id: str,
     coord: Coordinate,
@@ -592,29 +617,33 @@ def _build_advisory_record(
     resolved_modules: list[Coordinate] = []
     seen_modules: set[str] = set()
     upstream_cache: dict[str, dict[str, Any] | None] = {}
+    included_cves: set[str] = set()
 
     seen_cves: set[str] = set()
+    unique_vulns: list[str] = []
     for cve_id in vulns:
-        if cve_id in seen_cves:
-            continue
-        seen_cves.add(cve_id)
-        cve_ids.append(cve_id)
+        if cve_id not in seen_cves:
+            seen_cves.add(cve_id)
+            unique_vulns.append(cve_id)
 
-        osidb_meta: dict[str, Any] | None = None
-        if osidb_client and osidb_client.available:
-            flaw = osidb_client.get_flaw(cve_id)
-            if flaw:
-                osidb_meta = extract_osidb_metadata(flaw)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            cve_id: pool.submit(_prefetch_cve, cve_id, osidb_client) for cve_id in unique_vulns
+        }
+        prefetched = {cve_id: fut.result() for cve_id, fut in futures.items()}
+
+    for cve_id in unique_vulns:
+        data = prefetched[cve_id]
+        osidb_meta: dict[str, Any] | None = data["osidb_meta"]
+        upstream: dict[str, Any] | None = data["upstream"]
+        nvd: dict[str, Any] | None = data["nvd"]
+        cve_ids.append(cve_id)
 
         if osidb_meta and osidb_meta.get("embargoed"):
             logger.warning("Skipping embargoed %s in advisory %s", cve_id, advisory_id)
             continue
 
-        upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
         upstream_cache[cve_id] = upstream
-
-        nvd: dict[str, Any] | None = None
-        nvd_fetched = False
 
         # Collect GHSA aliases from upstream
         if upstream:
@@ -634,9 +663,6 @@ def _build_advisory_record(
             for cv in osidb_meta.get("cvss_vectors", []):
                 sev.append(Severity(type=cv["type"], score=cv["score"]))
         if not sev:
-            if not nvd_fetched and cve_id.startswith("CVE-"):
-                nvd = _fetch_nvd(cve_id)
-                nvd_fetched = True
             sev = _extract_severity(upstream or {}, nvd)
         if sev:
             new_rank = max(_CVSS_TYPE_RANK.get(s.type, 0) for s in sev)
@@ -649,15 +675,11 @@ def _build_advisory_record(
         desc = ""
         if upstream:
             desc = upstream.get("summary", "") or upstream.get("details", "")
-        if not desc:
-            if not nvd_fetched and cve_id.startswith("CVE-"):
-                nvd = _fetch_nvd(cve_id)
-                nvd_fetched = True
-            if nvd:
-                for d in nvd.get("descriptions", []):
-                    if d.get("lang") == "en":
-                        desc = d.get("value", "")
-                        break
+        if not desc and nvd:
+            for d in nvd.get("descriptions", []):
+                if d.get("lang") == "en":
+                    desc = d.get("value", "")
+                    break
         if not desc and osidb_meta:
             desc = osidb_meta.get("title", "")
         per_cve_descriptions.append((cve_id, desc))
@@ -679,17 +701,33 @@ def _build_advisory_record(
                 if mc.name not in seen_modules:
                     seen_modules.add(mc.name)
                     resolved_modules.append(mc)
+            included_cves.add(cve_id)
         elif strict:
             logger.warning("Skipping unresolvable %s in advisory %s", cve_id, advisory_id)
         else:
             if coord.name not in seen_modules:
                 seen_modules.add(coord.name)
                 resolved_modules.append(coord)
+            included_cves.add(cve_id)
+
+    # Filter to only CVEs that contributed at least one resolved module
+    cve_ids = [c for c in cve_ids if c in included_cves]
+    per_cve_descriptions = [(c, d) for c, d in per_cve_descriptions if c in included_cves]
+    ghsa_seen: set[str] = set()
+    filtered_ghsa: list[str] = []
+    for cid in cve_ids:
+        ups = upstream_cache.get(cid)
+        if ups:
+            for alias in ups.get("aliases", []):
+                if alias.startswith("GHSA-") and alias not in ghsa_seen:
+                    ghsa_seen.add(alias)
+                    filtered_ghsa.append(alias)
+    ghsa_ids = filtered_ghsa
 
     # upstream IDs: CVEs first, then GHSAs, deduplicated
     all_upstream_ids = list(dict.fromkeys(cve_ids + ghsa_ids))
 
-    # Affected entries: 2 per resolved module (plain + Lightwell ecosystem)
+    # Affected entries: plain ecosystem + Lightwell additive (registered only)
     affected: list[AffectedEntry] = []
     for mc in resolved_modules:
         vl_purl = _versionless_purl(mc)
@@ -701,7 +739,7 @@ def _build_advisory_record(
                 v = _extract_introduced(ups, mc.name, mc.osv_ecosystem)
                 if v != "0":
                     introduced_versions.append(v)
-        introduced = min(introduced_versions) if introduced_versions else "0"
+        introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
 
         # Plain ecosystem entry. For PyPI the fixed version (local segment)
         # does not exist on the public registry, so omit the fixed event to
@@ -725,12 +763,15 @@ def _build_advisory_record(
                 ),
             )
         )
-        affected.append(
-            AffectedEntry(
-                package=Package(ecosystem=f"Red Hat Lightwell:{mc.osv_ecosystem}", name=mc.name),
-                ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
+        if mc.osv_ecosystem in _REGISTERED_LIGHTWELL_ECOSYSTEMS:
+            affected.append(
+                AffectedEntry(
+                    package=Package(
+                        ecosystem=f"Red Hat Lightwell:{mc.osv_ecosystem}", name=mc.name
+                    ),
+                    ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
+                )
             )
-        )
 
     if not affected:
         logger.error("No resolvable modules for advisory %s; dropping record", advisory_id)
