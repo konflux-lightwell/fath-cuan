@@ -539,33 +539,6 @@ def _versionless_purl(coord: Coordinate) -> str:
     raise ValueError(f"Unsupported ecosystem for versionless PURL: {coord.ecosystem}")
 
 
-def _upstream_versioned_purl(coord: Coordinate) -> str:
-    """Construct a versioned PURL at the upstream base version (ADR-0026 §4.5)."""
-    if coord.ecosystem == "maven":
-        group, artifact = coord.name.split(":")
-        return PackageURL(
-            type="maven", namespace=group, name=artifact, version=coord.base_version
-        ).to_string()
-    if coord.ecosystem == "pypi":
-        return PackageURL(type="pypi", name=coord.name, version=coord.base_version).to_string()
-    raise ValueError(f"Unsupported ecosystem: {coord.ecosystem}")
-
-
-def _extract_build_token(version: str) -> str:
-    """Extract the rhlw build token from a full version string (ADR-0026 §4.5).
-
-    ``"1.0.0.rhlw-00001"`` → ``"rhlw-00001"``
-    ``"7.6.12+rhlw.1"``    → ``"rhlw.1"``
-    """
-    idx = version.find(".rhlw-")
-    if idx >= 0:
-        return version[idx + 1 :]
-    idx = version.find("+rhlw.")
-    if idx >= 0:
-        return version[idx + 1 :]
-    return ""
-
-
 def _synthesize_details(
     coord: Coordinate,
     per_cve_descriptions: list[tuple[str, str]],
@@ -746,9 +719,7 @@ def _build_advisory_record(
                     lightwell=LightwellMeta(
                         source="pnc-build",
                         backport_base_version=mc.base_version,
-                        upstream_base=mc.base_version,
-                        upstream_purl=_upstream_versioned_purl(mc),
-                        remediation_build=_extract_build_token(mc.version),
+                        remediated_version=mc.version,
                         repository_url=repo_url,
                     )
                 ),

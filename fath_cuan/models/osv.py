@@ -43,9 +43,6 @@ class LightwellMeta(BaseModel):
     vulnerability_class: str | None = None
     remediated_version: str | None = None
     repository_url: str | None = None
-    upstream_base: str | None = None
-    upstream_purl: str | None = None
-    remediation_build: str | None = None
 
 
 class DatabaseSpecific(BaseModel):
