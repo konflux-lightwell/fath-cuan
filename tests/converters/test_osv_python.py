@@ -305,3 +305,11 @@ def test_pypi_dual_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     assert r.affected[0].database_specific is not None
     lw = r.affected[0].database_specific.lightwell
     assert lw.repository_url == "https://packages.redhat.com/lightwell/python/remediated/"
+    # Plain PyPI entry omits 'fixed' (local version not on public PyPI).
+    plain_events = r.affected[0].ranges[0].events
+    assert len(plain_events) == 1
+    assert plain_events[0].introduced == "0"
+    # Lightwell:PyPI entry carries the fixed event.
+    lw_events = r.affected[1].ranges[0].events
+    assert len(lw_events) == 2
+    assert lw_events[1].fixed is not None

@@ -730,11 +730,18 @@ def _build_advisory_record(
                     introduced_versions.append(v)
         introduced = min(introduced_versions) if introduced_versions else "0"
 
+        # Plain ecosystem entry. For PyPI the fixed version (local segment)
+        # does not exist on the public registry, so omit the fixed event to
+        # pass the osv.dev linter's version-existence check (PKG:002).
+        plain_events = [Event(introduced=introduced)]
+        if mc.ecosystem != "pypi":
+            plain_events.append(Event(fixed=mc.version))
+
         affected.append(
             AffectedEntry(
                 package=Package(ecosystem=mc.osv_ecosystem, name=mc.name, purl=vl_purl),
                 versions=[mc.base_version],
-                ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
+                ranges=[Range(events=plain_events)],
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
                         source="pnc-build",

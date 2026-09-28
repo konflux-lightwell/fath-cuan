@@ -974,3 +974,66 @@ def test_unresolvable_cve_excluded(mock_nvd: object, mock_osv: object) -> None:
     assert "CVE-2024-26308" in r.upstream
     assert len(r.affected) == 2
     assert r.affected[0].package.name == "org.example:artifact"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_record_conforms_to_osv_schema(mock_osv: object, mock_nvd: object) -> None:
+    """Output dict validates against the OSV 1.9.0 JSON schema structure."""
+    import jsonschema
+
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    dumped = results[0].model_dump(exclude_none=True)
+
+    osv_schema = {
+        "type": "object",
+        "required": ["schema_version", "id", "modified", "affected"],
+        "properties": {
+            "schema_version": {"type": "string"},
+            "id": {"type": "string", "pattern": "^RHLW-"},
+            "modified": {"type": "string"},
+            "published": {"type": "string"},
+            "upstream": {"type": "array", "items": {"type": "string"}},
+            "summary": {"type": "string"},
+            "details": {"type": "string"},
+            "severity": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["type", "score"],
+                },
+            },
+            "affected": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "required": ["package"],
+                    "properties": {
+                        "package": {
+                            "type": "object",
+                            "required": ["ecosystem", "name"],
+                        },
+                    },
+                },
+            },
+            "references": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["type", "url"],
+                },
+            },
+            "credits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["name"],
+                },
+            },
+            "database_specific": {"type": "object"},
+        },
+        "additionalProperties": False,
+    }
+    jsonschema.validate(dumped, osv_schema)
