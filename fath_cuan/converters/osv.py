@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from typing import Any
@@ -55,6 +56,8 @@ _ADVISORY_PATTERNS = (
 
 _ADVISORY_URL_TEMPLATE = "https://packages.redhat.com/lightwell/advisories/{}.json"
 
+_CVSS_TYPE_RANK = {"CVSS_V4": 3, "CVSS_V3": 2, "CVSS_V2": 1}
+
 _REPOSITORY_URLS: dict[str, str] = {
     "maven": "https://packages.redhat.com/lightwell/java/remediated/",
     "pypi": "https://packages.redhat.com/lightwell/python/remediated/",
@@ -65,11 +68,17 @@ _REGISTRY_NAMES: dict[str, str] = {
     "pypi": "PyPI",
 }
 
-_INTERNAL_URL_PATTERNS = (
-    "gitlab.cee.redhat.com",
-    "issues.redhat.com",
-    "bugzilla.redhat.com",
-    "jira.redhat.com",
+_PUBLIC_HOST_SUFFIXES = (
+    "nvd.nist.gov",
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "osv.dev",
+    "spring.io",
+    "apache.org",
+    "cve.org",
+    "access.redhat.com",
+    "packages.redhat.com",
 )
 
 
@@ -495,9 +504,13 @@ def _purl_built_coords(
     return coords
 
 
-def _is_internal_url(url: str) -> bool:
-    """Return True for URLs belonging to internal Red Hat infrastructure."""
-    return any(p in url for p in _INTERNAL_URL_PATTERNS)
+def _is_public_url(url: str) -> bool:
+    """Return True only for URLs on known public hosts."""
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+    except ValueError:
+        return False
+    return any(host == suffix or host.endswith("." + suffix) for suffix in _PUBLIC_HOST_SUFFIXES)
 
 
 def _classify_advisory_reference(url: str, original_type: str) -> str:
@@ -593,10 +606,15 @@ def _build_advisory_record(
             if flaw:
                 osidb_meta = extract_osidb_metadata(flaw)
 
+        if osidb_meta and osidb_meta.get("embargoed"):
+            logger.warning("Skipping embargoed %s in advisory %s", cve_id, advisory_id)
+            continue
+
         upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
         upstream_cache[cve_id] = upstream
 
         nvd: dict[str, Any] | None = None
+        nvd_fetched = False
 
         # Collect GHSA aliases from upstream
         if upstream:
@@ -610,38 +628,45 @@ def _build_advisory_record(
             if cwe and cwe not in all_cwe_ids:
                 all_cwe_ids.append(cwe)
 
-        # Severity: keep the first non-empty set found
+        # Severity: keep the highest CVSS type found across CVEs
         sev: list[Severity] = []
         if osidb_meta:
             for cv in osidb_meta.get("cvss_vectors", []):
                 sev.append(Severity(type=cv["type"], score=cv["score"]))
         if not sev:
-            nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
+            if not nvd_fetched and cve_id.startswith("CVE-"):
+                nvd = _fetch_nvd(cve_id)
+                nvd_fetched = True
             sev = _extract_severity(upstream or {}, nvd)
-        if sev and not best_severity:
-            best_severity = sev
+        if sev:
+            new_rank = max(_CVSS_TYPE_RANK.get(s.type, 0) for s in sev)
+            old_rank = max((_CVSS_TYPE_RANK.get(s.type, 0) for s in best_severity), default=-1)
+            if new_rank > old_rank:
+                best_severity = sev
 
-        # Per-CVE description (best available)
+        # Per-CVE description: prefer public sources to avoid internal
+        # analysis text (comment_zero) leaking into the advisory.
         desc = ""
-        if osidb_meta:
-            desc = osidb_meta.get("description", "") or osidb_meta.get("title", "")
-        if not desc and upstream:
+        if upstream:
             desc = upstream.get("summary", "") or upstream.get("details", "")
         if not desc:
-            if nvd is None and cve_id.startswith("CVE-"):
+            if not nvd_fetched and cve_id.startswith("CVE-"):
                 nvd = _fetch_nvd(cve_id)
+                nvd_fetched = True
             if nvd:
                 for d in nvd.get("descriptions", []):
                     if d.get("lang") == "en":
                         desc = d.get("value", "")
                         break
+        if not desc and osidb_meta:
+            desc = osidb_meta.get("title", "")
         per_cve_descriptions.append((cve_id, desc))
 
         # Public references from upstream (filtered)
         if upstream:
             for r in upstream.get("references", []):
                 url = r.get("url", "")
-                if url and not _is_internal_url(url):
+                if url and _is_public_url(url):
                     ref_type = _classify_advisory_reference(url, r.get("type", "WEB"))
                     all_refs.append(Reference(url=url, type=ref_type))
         nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
@@ -670,13 +695,13 @@ def _build_advisory_record(
         vl_purl = _versionless_purl(mc)
         repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
 
-        introduced = "0"
+        introduced_versions: list[str] = []
         for _cve_id, ups in upstream_cache.items():
             if ups:
                 v = _extract_introduced(ups, mc.name, mc.osv_ecosystem)
                 if v != "0":
-                    introduced = v
-                    break
+                    introduced_versions.append(v)
+        introduced = min(introduced_versions) if introduced_versions else "0"
 
         affected.append(
             AffectedEntry(
@@ -700,6 +725,10 @@ def _build_advisory_record(
             )
         )
 
+    if not affected:
+        logger.error("No resolvable modules for advisory %s; dropping record", advisory_id)
+        return []
+
     # References: ADVISORY first, then deduplicated per-CVE refs
     advisory_url = _ADVISORY_URL_TEMPLATE.format(advisory_id)
     refs: list[Reference] = [Reference(url=advisory_url, type="ADVISORY")]
@@ -710,9 +739,15 @@ def _build_advisory_record(
             refs.append(r)
 
     # Summary and details
-    short_name = coord.name.split(":")[-1]
-    summary = f"Lightwell Security Advisory: {short_name} {coord.version}"
-    details = _synthesize_details(coord, per_cve_descriptions)
+    if resolved_modules:
+        summary_name = resolved_modules[0].name.split(":")[-1]
+        summary_version = resolved_modules[0].version
+    else:
+        summary_name = coord.name.split(":")[-1]
+        summary_version = coord.version
+    summary = f"Lightwell Security Advisory: {summary_name} {summary_version}"
+    details_coord = resolved_modules[0] if resolved_modules else coord
+    details = _synthesize_details(details_coord, per_cve_descriptions)
 
     db_specific = AdvisoryDatabaseSpecific(
         lightwell=AdvisoryLevelMeta(

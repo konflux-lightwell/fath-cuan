@@ -11,6 +11,7 @@ need not regex-split version strings.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -50,6 +51,13 @@ class BuildIndex(BaseModel):
     # current UTC time when absent.
     created: datetime | None = None
     advisory_id: str | None = Field(default=None, alias="advisoryId")
+
+    @field_validator("advisory_id")
+    @classmethod
+    def _valid_advisory_id(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"RHLW-\d{4}-\d{5}", value):
+            raise ValueError(f"advisory_id must match RHLW-YYYY-NNNNN, got '{value}'")
+        return value
 
     @model_validator(mode="before")
     @classmethod

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Evidence(BaseModel):
@@ -31,6 +32,13 @@ class InputDocument(BaseModel):
     gav_index_tag: str = Field(default="", alias="gavIndexTag")
     gavs: list[str] = Field(default_factory=list)
     advisory_id: str | None = Field(default=None, alias="advisoryId")
+
+    @field_validator("advisory_id")
+    @classmethod
+    def _valid_advisory_id(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"RHLW-\d{4}-\d{5}", value):
+            raise ValueError(f"advisory_id must match RHLW-YYYY-NNNNN, got '{value}'")
+        return value
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InputDocument:
