@@ -271,6 +271,33 @@ def _extract_introduced(
     return "0"
 
 
+def _extract_versions(
+    upstream: dict[str, Any], coordinates: str, osv_ecosystem: str = "Maven"
+) -> list[str]:
+    """Extract the affected versions list from a matching upstream entry.
+
+    Uses the same name-matching logic as ``_extract_introduced``. Returns the
+    upstream ``versions[]`` array when found, or an empty list if no match or
+    the upstream entry has no explicit version enumeration.
+    """
+
+    def _norm(name: str) -> str:
+        return pep503_normalize(name) if osv_ecosystem == "PyPI" else name
+
+    target = _norm(coordinates)
+    entries = [
+        a
+        for a in upstream.get("affected", [])
+        if a.get("package", {}).get("ecosystem") == osv_ecosystem
+    ]
+    for a in entries:
+        if _norm(a.get("package", {}).get("name", "")) == target:
+            versions = a.get("versions")
+            if isinstance(versions, list) and versions:
+                return [str(v) for v in versions]
+    return []
+
+
 def _norm_name(name: str, osv_ecosystem: str) -> str:
     """Normalize a package name for cross-source matching.
 
@@ -734,12 +761,15 @@ def _build_advisory_record(
         repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
 
         introduced_versions: list[str] = []
+        upstream_versions: list[str] = []
         for _cve_id, ups in upstream_cache.items():
             if ups:
                 v = _extract_introduced(ups, mc.name, mc.osv_ecosystem)
                 if v != "0":
                     introduced_versions.append(v)
+                upstream_versions.extend(_extract_versions(ups, mc.name, mc.osv_ecosystem))
         introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
+        versions = sorted(set(upstream_versions), key=_version_key) or [mc.base_version]
 
         # Plain ecosystem entry. For PyPI the fixed version (local segment)
         # does not exist on the public registry, so omit the fixed event to
@@ -751,7 +781,7 @@ def _build_advisory_record(
         affected.append(
             AffectedEntry(
                 package=Package(ecosystem=mc.osv_ecosystem, name=mc.name, purl=vl_purl),
-                versions=[mc.base_version],
+                versions=versions,
                 ranges=[Range(events=plain_events)],
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
