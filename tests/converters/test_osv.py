@@ -873,7 +873,7 @@ def test_per_affected_database_specific(mock_osv: object, mock_nvd: object) -> N
     assert lw.backport_base_version == "1.0.0"
     assert lw.remediated_version == "1.0.0.rhlw-00001"
     assert lw.repository_url == "https://packages.redhat.com/lightwell/java/remediated/"
-    assert lw.source == "pnc-build"
+    assert lw.source == "lightwell-pipeline"
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)

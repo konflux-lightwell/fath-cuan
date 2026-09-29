@@ -755,7 +755,7 @@ def _build_advisory_record(
                 ranges=[Range(events=plain_events)],
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
-                        source="pnc-build",
+                        source="lightwell-pipeline",
                         backport_base_version=mc.base_version,
                         remediated_version=mc.version,
                         repository_url=repo_url,
