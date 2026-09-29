@@ -53,8 +53,11 @@ class InputDocument(BaseModel):
     @field_validator("advisory_id")
     @classmethod
     def _valid_advisory_id(cls, value: str | None) -> str | None:
-        if value is not None and not re.fullmatch(r"RHLW-\d{4}-\d{5}", value):
-            raise ValueError(f"advisory_id must match RHLW-YYYY-NNNNN, got '{value}'")
+        if value is not None:
+            if not value.startswith("RHLW-"):
+                raise ValueError(f"advisory_id must start with 'RHLW-', got '{value}'")
+            if "/" in value or "\\" in value:
+                raise ValueError(f"advisory_id must not contain path separators, got '{value}'")
         return value
 
     @classmethod
