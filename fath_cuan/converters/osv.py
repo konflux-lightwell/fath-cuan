@@ -25,8 +25,6 @@ from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
 from fath_cuan.models.osv import (
-    AdvisoryDatabaseSpecific,
-    AdvisoryLevelMeta,
     AffectedEntry,
     Credit,
     DatabaseSpecific,
@@ -545,16 +543,15 @@ def _is_public_url(url: str) -> bool:
 def _classify_advisory_reference(url: str, original_type: str) -> str:
     """Classify a reference URL for the per-release (advisory) path.
 
-    Commits become FIX, issue tracker links become REPORT, everything else
-    keeps its original type unless it would be ADVISORY (reserved for the
-    advisory's own URL).
+    Commits become FIX, issue tracker links become REPORT, NVD detail
+    pages become ADVISORY, everything else keeps its original type.
     """
     if "/commit/" in url or "/commits/" in url:
         return "FIX"
     if "/issues/" in url:
         return "REPORT"
-    if original_type == "ADVISORY":
-        return "WEB"
+    if "nvd.nist.gov/vuln/detail/" in url:
+        return "ADVISORY"
     return original_type
 
 
@@ -719,7 +716,7 @@ def _build_advisory_record(
                     ref_type = _classify_advisory_reference(url, r.get("type", "WEB"))
                     all_refs.append(Reference(url=url, type=ref_type))
         nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
-        all_refs.append(Reference(url=nvd_url, type="WEB"))
+        all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
 
         # Module resolution
         matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
@@ -807,10 +804,9 @@ def _build_advisory_record(
         logger.error("No resolvable modules for advisory %s; dropping record", advisory_id)
         return []
 
-    # References: ADVISORY first, then deduplicated per-CVE refs
-    advisory_url = _ADVISORY_URL_TEMPLATE.format(advisory_id)
-    refs: list[Reference] = [Reference(url=advisory_url, type="ADVISORY")]
-    seen_urls: set[str] = {advisory_url}
+    # References: deduplicated per-CVE refs (NVD as ADVISORY)
+    refs: list[Reference] = []
+    seen_urls: set[str] = set()
     for r in all_refs:
         if r.url not in seen_urls:
             seen_urls.add(r.url)
@@ -827,14 +823,14 @@ def _build_advisory_record(
     details_coord = resolved_modules[0] if resolved_modules else coord
     details = _synthesize_details(details_coord, per_cve_descriptions)
 
-    db_specific = AdvisoryDatabaseSpecific(
-        lightwell=AdvisoryLevelMeta(
-            # TODO: uncomment when CSAF generation and the
-            # packages.redhat.com/lightwell/advisories endpoint are live.
-            # csaf_advisory=advisory_url,
-            cwe_ids=all_cwe_ids,
-        )
-    )
+    # TODO: re-enable advisory-level database_specific when csaf_advisory
+    # and cwe_ids are reliably populated.
+    # db_specific = AdvisoryDatabaseSpecific(
+    #     lightwell=AdvisoryLevelMeta(
+    #         csaf_advisory=advisory_url,
+    #         cwe_ids=all_cwe_ids,
+    #     )
+    # )
 
     record = OSVDocument(
         id=advisory_id,
@@ -847,7 +843,6 @@ def _build_advisory_record(
         upstream=all_upstream_ids,
         affected=affected,
         credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
-        database_specific=db_specific,
     )
     logger.info("Generated advisory record %s with %d CVEs", advisory_id, len(cve_ids))
     return [record]

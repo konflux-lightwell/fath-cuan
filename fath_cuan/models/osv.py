@@ -80,4 +80,4 @@ class OSVDocument(BaseModel):
     related: list[str] | None = None
     affected: list[AffectedEntry]
     credits: list[Credit] = Field(default_factory=list)
-    database_specific: DatabaseSpecific | AdvisoryDatabaseSpecific
+    database_specific: DatabaseSpecific | AdvisoryDatabaseSpecific | None = None

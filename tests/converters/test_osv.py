@@ -844,10 +844,11 @@ def test_references_public_only(mock_nvd: object, mock_osv: object) -> None:
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
     results = convert(doc)
     refs = results[0].references
-    assert refs[0].type == "ADVISORY"
-    assert "packages.redhat.com/lightwell/advisories" in refs[0].url
     urls = [r.url for r in refs]
     assert not any("gitlab.cee.redhat.com" in u for u in urls)
+    assert not any("packages.redhat.com/lightwell/advisories" in u for u in urls)
+    nvd_ref = [r for r in refs if "nvd.nist.gov" in r.url]
+    assert nvd_ref[0].type == "ADVISORY"
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -903,12 +904,7 @@ def test_advisory_level_database_specific(mock_osv: object, mock_nvd: object) ->
     with patch.object(client, "_get", return_value=osidb_resp):
         doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
         results = convert(doc, osidb_client=client)
-    db = results[0].database_specific
-    from fath_cuan.models.osv import AdvisoryDatabaseSpecific
-
-    assert isinstance(db, AdvisoryDatabaseSpecific)
-    assert db.lightwell.csaf_advisory is None
-    assert "CWE-400" in db.lightwell.cwe_ids
+    assert results[0].database_specific is None
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
