@@ -501,6 +501,33 @@ def test_osidb_enriches_novel_record(mock_osv: object, mock_nvd: object) -> None
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_legacy_osidb_refs_filtered(mock_osv: object, mock_nvd: object) -> None:
+    """Internal URLs from OSIDB are stripped; public URLs are kept."""
+    flaw = {
+        "count": 1,
+        "results": [
+            {
+                **OSIDB_FLAW_RESPONSE["results"][0],
+                "references": [
+                    {"url": "https://gitlab.cee.redhat.com/internal/issue/1", "type": "SOURCE"},
+                    {"url": "https://redhat.atlassian.net/browse/LTWL-999", "type": "WEB"},
+                    {"url": "https://nvd.nist.gov/vuln/detail/CVE-2024-25710", "type": "ADVISORY"},
+                ],
+            }
+        ],
+    }
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=flaw):
+        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        results = convert(doc, osidb_client=client)
+    urls = [r.url for r in results[0].references]
+    assert "https://nvd.nist.gov/vuln/detail/CVE-2024-25710" in urls
+    assert not any("gitlab.cee.redhat.com" in u for u in urls)
+    assert not any("redhat.atlassian.net" in u for u in urls)
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_osidb_unavailable_falls_back(mock_osv: object, mock_nvd: object) -> None:
     with patch("fath_cuan.osidb._obtain_token", return_value=None):
         client = OsidbClient(base_url="https://example.com")
