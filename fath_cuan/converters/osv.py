@@ -718,6 +718,17 @@ def _build_advisory_record(
         nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
         all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
 
+        # GHSA advisory references
+        if upstream:
+            for alias in upstream.get("aliases", []):
+                if alias.startswith("GHSA-"):
+                    all_refs.append(
+                        Reference(
+                            url=f"https://github.com/advisories/{alias}",
+                            type="ADVISORY",
+                        )
+                    )
+
         # Module resolution
         matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
         if matched:
