@@ -829,7 +829,9 @@ def _build_advisory_record(
 
     db_specific = AdvisoryDatabaseSpecific(
         lightwell=AdvisoryLevelMeta(
-            csaf_advisory=advisory_url,
+            # TODO: uncomment when CSAF generation and the
+            # packages.redhat.com/lightwell/advisories endpoint are live.
+            # csaf_advisory=advisory_url,
             cwe_ids=all_cwe_ids,
         )
     )

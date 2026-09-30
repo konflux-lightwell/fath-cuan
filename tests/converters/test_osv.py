@@ -907,7 +907,7 @@ def test_advisory_level_database_specific(mock_osv: object, mock_nvd: object) ->
     from fath_cuan.models.osv import AdvisoryDatabaseSpecific
 
     assert isinstance(db, AdvisoryDatabaseSpecific)
-    assert "packages.redhat.com/lightwell/advisories" in (db.lightwell.csaf_advisory or "")
+    assert db.lightwell.csaf_advisory is None
     assert "CWE-400" in db.lightwell.cwe_ids
 
 
