@@ -490,7 +490,7 @@ def test_osidb_enriches_novel_record(mock_osv: object, mock_nvd: object) -> None
     assert r.summary == "Unclosed '[' in LDAP URL host spins thread forever"
     assert r.severity[0].score == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
     assert r.severity[0].type == "CVSS_V3"
-    assert len(r.references) >= 1
+    assert r.references == []
     assert r.database_specific.lightwell.lw_id == "LW-2026-0468"
     assert r.database_specific.lightwell.vulnerability_class == "CWE-835"
     assert r.database_specific.lightwell.source == "novel-pipeline"

@@ -1050,7 +1050,8 @@ def _build_records(
                 severity.append(Severity(type=cv["type"], score=cv["score"]))
 
             for ref in osidb_meta.get("references", []):
-                references.append(Reference(url=ref["url"], type=ref["type"]))
+                if _is_public_url(ref["url"]):
+                    references.append(Reference(url=ref["url"], type=ref["type"]))
 
             osidb_cve = osidb_meta.get("cve_id")
             if osidb_cve and osidb_cve not in aliases:
