@@ -54,8 +54,6 @@ _ADVISORY_PATTERNS = (
     "access.redhat.com/security/cve/",
 )
 
-_ADVISORY_URL_TEMPLATE = "https://packages.redhat.com/lightwell/advisories/{}.json"
-
 _CVSS_TYPE_RANK = {"CVSS_V4": 3, "CVSS_V3": 2, "CVSS_V2": 1}
 
 _REPOSITORY_URLS: dict[str, str] = {
@@ -834,14 +832,17 @@ def _build_advisory_record(
     details_coord = resolved_modules[0] if resolved_modules else coord
     details = _synthesize_details(details_coord, per_cve_descriptions)
 
-    # TODO: re-enable advisory-level database_specific when csaf_advisory
-    # and cwe_ids are reliably populated.
+    # TODO: re-enable advisory-level database_specific when CSAF generation
+    # and cwe_ids enrichment are reliably wired up.
+    # from fath_cuan.models.osv import AdvisoryDatabaseSpecific, AdvisoryLevelMeta
+    # advisory_url = f"https://packages.redhat.com/lightwell/advisories/{advisory_id}.json"
     # db_specific = AdvisoryDatabaseSpecific(
     #     lightwell=AdvisoryLevelMeta(
     #         csaf_advisory=advisory_url,
     #         cwe_ids=all_cwe_ids,
     #     )
     # )
+    # ... and pass database_specific=db_specific to OSVDocument below.
 
     record = OSVDocument(
         id=advisory_id,
