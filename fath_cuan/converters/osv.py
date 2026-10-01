@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,14 +58,25 @@ _ADVISORY_PATTERNS = (
 _CVSS_TYPE_RANK = {"CVSS_V4": 3, "CVSS_V3": 2, "CVSS_V2": 1}
 
 _REPOSITORY_URLS: dict[str, str] = {
-    "maven": "https://packages.redhat.com/lightwell/java/remediated/",
-    "pypi": "https://packages.redhat.com/lightwell/python/remediated/",
+    "maven": os.environ.get(
+        "FATH_CUAN_REPOSITORY_URL_MAVEN",
+        "https://packages.redhat.com/lightwell/java/remediated/",
+    ),
+    "pypi": os.environ.get(
+        "FATH_CUAN_REPOSITORY_URL_PYPI",
+        "https://packages.redhat.com/lightwell/python/remediated/",
+    ),
 }
 
 _REGISTRY_NAMES: dict[str, str] = {
     "maven": "Maven Central",
     "pypi": "PyPI",
 }
+
+# Only ecosystems registered with ossf/osv-schema get the additive
+# Red Hat Lightwell:<eco> affected entry.  Maven was registered via
+# PR #571; PyPI and others will be added here as they are registered.
+_REGISTERED_LIGHTWELL_ECOSYSTEMS = {"Maven"}
 
 _PUBLIC_HOST_SUFFIXES = (
     "nvd.nist.gov",
@@ -550,6 +562,8 @@ def _classify_advisory_reference(url: str, original_type: str) -> str:
         return "REPORT"
     if "nvd.nist.gov/vuln/detail/" in url:
         return "ADVISORY"
+    if "/advisories/" in url or "/advisory/" in url:
+        return "ADVISORY"
     return original_type
 
 
@@ -593,9 +607,6 @@ def _synthesize_details(
     )
 
     return "\n\n".join([lead, *cve_descs, dropin])
-
-
-_REGISTERED_LIGHTWELL_ECOSYSTEMS = {"Maven"}
 
 
 def _version_key(v: str) -> tuple[int, Any]:

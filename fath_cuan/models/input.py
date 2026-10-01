@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-_VULN_ID_PATTERNS = [
-    re.compile(r"^CVE-\d{4}-\d{4,}$"),
-    re.compile(r"^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$"),
-    re.compile(r"^LW-\d{4}-\d{4,}$"),
-]
+from fath_cuan.models.validators import validate_advisory_id, validate_vuln_ids
 
 
 class Evidence(BaseModel):
@@ -42,23 +37,12 @@ class InputDocument(BaseModel):
     @field_validator("vulns")
     @classmethod
     def _valid_vuln_ids(cls, value: list[str]) -> list[str]:
-        for v in value:
-            if not any(p.fullmatch(v) for p in _VULN_ID_PATTERNS):
-                raise ValueError(
-                    f"vuln id '{v}' must match CVE-YYYY-NNNN+, "
-                    f"GHSA-xxxx-xxxx-xxxx, or LW-YYYY-NNNN+"
-                )
-        return value
+        return validate_vuln_ids(value)
 
     @field_validator("advisory_id")
     @classmethod
     def _valid_advisory_id(cls, value: str | None) -> str | None:
-        if value is not None:
-            if not value.startswith("RHLW-"):
-                raise ValueError(f"advisory_id must start with 'RHLW-', got '{value}'")
-            if "/" in value or "\\" in value:
-                raise ValueError(f"advisory_id must not contain path separators, got '{value}'")
-        return value
+        return validate_advisory_id(value)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> InputDocument:
