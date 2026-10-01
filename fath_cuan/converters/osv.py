@@ -843,7 +843,7 @@ def _build_advisory_record(
     details_coord = resolved_modules[0] if resolved_modules else coord
     details = _synthesize_details(details_coord, per_cve_descriptions)
 
-    # TODO: re-enable advisory-level database_specific when CSAF generation
+    # TODO(LWLP-2370): re-enable advisory-level database_specific when CSAF
     # and cwe_ids enrichment are reliably wired up.
     # from fath_cuan.models.osv import AdvisoryDatabaseSpecific, AdvisoryLevelMeta
     # advisory_url = f"https://packages.redhat.com/lightwell/advisories/{advisory_id}.json"
