@@ -824,15 +824,13 @@ def _build_advisory_record(
     details_coord = resolved_modules[0] if resolved_modules else coord
     details = _synthesize_details(details_coord, per_cve_descriptions)
 
-    # TODO(LWLP-2370): re-enable advisory-level database_specific when CSAF
-    # and cwe_ids enrichment are reliably wired up.
-    # from fath_cuan.models.osv import AdvisoryDatabaseSpecific, AdvisoryLevelMeta
-    # db_specific = AdvisoryDatabaseSpecific(
-    #     lightwell=AdvisoryLevelMeta(
-    #         cwe_ids=all_cwe_ids,
-    #     )
-    # )
-    # ... and pass database_specific=db_specific to OSVDocument below.
+    from fath_cuan.models.osv import AdvisoryDatabaseSpecific, AdvisoryLevelMeta
+
+    db_specific = AdvisoryDatabaseSpecific(
+        lightwell=AdvisoryLevelMeta(
+            cwe_ids=all_cwe_ids,
+        )
+    )
 
     record = OSVDocument(
         id=advisory_id,
@@ -845,6 +843,7 @@ def _build_advisory_record(
         upstream=all_upstream_ids,
         affected=affected,
         credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
+        database_specific=db_specific,
     )
     logger.info("Generated advisory record %s with %d CVEs", advisory_id, len(cve_ids))
     return [record]
