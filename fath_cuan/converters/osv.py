@@ -785,9 +785,7 @@ def _build_advisory_record(
 
         affected.append(
             AffectedEntry(
-                package=Package(
-                    ecosystem="Red Hat Lightwell", name=mc.name, purl=vl_purl
-                ),
+                package=Package(ecosystem="Red Hat Lightwell", name=mc.name, purl=vl_purl),
                 versions=versions,
                 ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
                 database_specific=DatabaseSpecific(
