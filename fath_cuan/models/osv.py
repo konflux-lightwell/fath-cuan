@@ -35,7 +35,7 @@ class Credit(BaseModel):
 
 
 class LightwellMeta(BaseModel):
-    source: str = "pnc-build"
+    source: str | None = "pnc-build"
     backport_base_version: str
     lw_id: str | None = None
     embargo_status: str | None = None

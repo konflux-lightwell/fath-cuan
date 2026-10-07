@@ -310,4 +310,6 @@ def test_multi_cve_different_modules(mock_osv: object, mock_nvd: object) -> None
     names = [a.package.name for a in advisory.affected]
     assert "ch.qos.logback:logback-classic" in names
     assert "ch.qos.logback:logback-core" in names
-    assert len(advisory.affected) == 4
+    assert len(advisory.affected) == 2
+    for aff in advisory.affected:
+        assert aff.package.ecosystem == "Red Hat Lightwell"
