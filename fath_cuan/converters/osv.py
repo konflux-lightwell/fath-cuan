@@ -73,11 +73,6 @@ _REGISTRY_NAMES: dict[str, str] = {
     "pypi": "PyPI",
 }
 
-# Only ecosystems registered with ossf/osv-schema get the additive
-# Red Hat Lightwell:<eco> affected entry.  Maven was registered via
-# PR #571; PyPI and others will be added here as they are registered.
-_REGISTERED_LIGHTWELL_ECOSYSTEMS = {"Maven"}
-
 _PUBLIC_HOST_SUFFIXES = (
     "nvd.nist.gov",
     "github.com",
@@ -771,7 +766,7 @@ def _build_advisory_record(
     # upstream IDs: CVEs first, then GHSAs, deduplicated
     all_upstream_ids = list(dict.fromkeys(cve_ids + ghsa_ids))
 
-    # Affected entries: plain ecosystem + Lightwell additive (registered only)
+    # Affected entries: single Red Hat Lightwell ecosystem per package.
     affected: list[AffectedEntry] = []
     for mc in resolved_modules:
         vl_purl = _versionless_purl(mc)
@@ -788,21 +783,16 @@ def _build_advisory_record(
         introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
         versions = sorted(set(upstream_versions), key=_version_key) or [mc.base_version]
 
-        # Plain ecosystem entry. For PyPI the fixed version (local segment)
-        # does not exist on the public registry, so omit the fixed event to
-        # pass the osv.dev linter's version-existence check (PKG:002).
-        plain_events = [Event(introduced=introduced)]
-        if mc.ecosystem != "pypi":
-            plain_events.append(Event(fixed=mc.version))
-
         affected.append(
             AffectedEntry(
-                package=Package(ecosystem=mc.osv_ecosystem, name=mc.name, purl=vl_purl),
+                package=Package(
+                    ecosystem="Red Hat Lightwell", name=mc.name, purl=vl_purl
+                ),
                 versions=versions,
-                ranges=[Range(events=plain_events)],
+                ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
                 database_specific=DatabaseSpecific(
                     lightwell=LightwellMeta(
-                        source="lightwell-pipeline",
+                        source=None,
                         backport_base_version=mc.base_version,
                         remediated_version=mc.version,
                         repository_url=repo_url,
@@ -810,15 +800,6 @@ def _build_advisory_record(
                 ),
             )
         )
-        if mc.osv_ecosystem in _REGISTERED_LIGHTWELL_ECOSYSTEMS:
-            affected.append(
-                AffectedEntry(
-                    package=Package(
-                        ecosystem=f"Red Hat Lightwell:{mc.osv_ecosystem}", name=mc.name
-                    ),
-                    ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
-                )
-            )
 
     if not affected:
         logger.error("No resolvable modules for advisory %s; dropping record", advisory_id)
@@ -846,10 +827,8 @@ def _build_advisory_record(
     # TODO(LWLP-2370): re-enable advisory-level database_specific when CSAF
     # and cwe_ids enrichment are reliably wired up.
     # from fath_cuan.models.osv import AdvisoryDatabaseSpecific, AdvisoryLevelMeta
-    # advisory_url = f"https://packages.redhat.com/lightwell/advisories/{advisory_id}.json"
     # db_specific = AdvisoryDatabaseSpecific(
     #     lightwell=AdvisoryLevelMeta(
-    #         csaf_advisory=advisory_url,
     #         cwe_ids=all_cwe_ids,
     #     )
     # )

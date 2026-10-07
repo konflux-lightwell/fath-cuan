@@ -53,12 +53,12 @@ SAMPLE_MIXED_VULN_DATA = {
 
 SAMPLE_ADVISORY_DATA = {
     **SAMPLE_INPUT_DATA,
-    "advisoryId": "RHLW-2026-00042",
+    "advisoryId": "RHLW-2026-5fc0229c48c1b99c",
 }
 
 SAMPLE_ADVISORY_MULTI_CVE_DATA = {
     **SAMPLE_MULTI_CVE_DATA,
-    "advisoryId": "RHLW-2026-00042",
+    "advisoryId": "RHLW-2026-5fc0229c48c1b99c",
 }
 
 

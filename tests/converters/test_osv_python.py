@@ -284,28 +284,28 @@ def test_pypi_created_offset_converted_to_utc(mock_osv: object, mock_nvd: object
 
 PYPI_ADVISORY_BUILD_INDEX = {
     **PYPI_BUILD_INDEX,
-    "advisoryId": "RHLW-2026-00099",
+    "advisoryId": "RHLW-2026-679b0e21fab70949",
 }
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_pypi_dual_ecosystem(mock_osv: object, mock_nvd: object) -> None:
+def test_pypi_single_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     bi = BuildIndex.from_dict(PYPI_ADVISORY_BUILD_INDEX)
     results = convert_build_index(bi)
     assert len(results) == 2
     r = results[0]
-    assert r.id == "RHLW-2026-00099"
-    # PyPI not yet registered with osv-schema; only plain entry emitted.
+    assert r.id == "RHLW-2026-679b0e21fab70949"
     assert len(r.affected) == 1
-    assert r.affected[0].package.ecosystem == "PyPI"
+    assert r.affected[0].package.ecosystem == "Red Hat Lightwell"
     purl = r.affected[0].package.purl
     assert purl is not None
     assert "@" not in purl
     assert r.affected[0].database_specific is not None
     lw = r.affected[0].database_specific.lightwell
     assert lw.repository_url == "https://packages.redhat.com/lightwell/python/remediated/"
-    # Plain PyPI entry omits 'fixed' (local version not on public PyPI).
-    plain_events = r.affected[0].ranges[0].events
-    assert len(plain_events) == 1
-    assert plain_events[0].introduced == "0"
+    assert lw.source is None
+    events = r.affected[0].ranges[0].events
+    assert len(events) == 2
+    assert events[0].introduced == "0"
+    assert events[1].fixed == "7.6.12+rhlw.1"
