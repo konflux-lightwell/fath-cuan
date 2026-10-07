@@ -792,7 +792,7 @@ def test_single_cve_new_format(mock_osv: object, mock_nvd: object) -> None:
     assert r.upstream == ["CVE-2024-25710"]
     assert r.aliases is None
     assert len(r.affected) == 1
-    assert r.affected[0].package.ecosystem == "Red Hat Lightwell"
+    assert r.affected[0].package.ecosystem == "Red Hat Lightwell:Maven"
     assert r.affected[0].database_specific is not None
     dumped = r.affected[0].database_specific.lightwell.model_dump(exclude_none=True)
     assert "source" not in dumped
@@ -828,7 +828,7 @@ def test_multi_cve_new_format(mock_nvd: object, mock_osv: object) -> None:
     assert "CVE-2024-26308" in r.upstream
     assert len(r.severity) >= 1
     assert len(r.affected) == 1
-    assert r.affected[0].package.ecosystem == "Red Hat Lightwell"
+    assert r.affected[0].package.ecosystem == "Red Hat Lightwell:Maven"
 
 
 @patch("fath_cuan.converters.osv._fetch_upstream_osv")
@@ -1002,7 +1002,7 @@ def test_unresolvable_cve_excluded(mock_nvd: object, mock_osv: object) -> None:
     assert "CVE-2024-25710" not in r.upstream
     assert "CVE-2024-26308" in r.upstream
     assert len(r.affected) == 1
-    assert r.affected[0].package.ecosystem == "Red Hat Lightwell"
+    assert r.affected[0].package.ecosystem == "Red Hat Lightwell:Maven"
     assert r.affected[0].package.name == "org.example:artifact"
 
 

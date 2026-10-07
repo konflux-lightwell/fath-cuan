@@ -297,7 +297,7 @@ def test_pypi_single_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     r = results[0]
     assert r.id == "RHLW-2026-679b0e21fab70949"
     assert len(r.affected) == 1
-    assert r.affected[0].package.ecosystem == "Red Hat Lightwell"
+    assert r.affected[0].package.ecosystem == "Red Hat Lightwell:PyPI"
     purl = r.affected[0].package.purl
     assert purl is not None
     assert "@" not in purl
