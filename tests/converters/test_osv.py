@@ -935,7 +935,11 @@ def test_advisory_level_database_specific(mock_osv: object, mock_nvd: object) ->
     with patch.object(client, "_get", return_value=osidb_resp):
         doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
         results = convert(doc, osidb_client=client)
-    assert results[0].database_specific is None
+    db = results[0].database_specific
+    assert db is not None
+    assert db.lightwell.cwe_ids == ["CWE-400"]
+    dumped = db.model_dump(exclude_none=True)
+    assert "csaf_advisory" not in dumped.get("lightwell", {})
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -1067,3 +1071,47 @@ def test_advisory_record_conforms_to_osv_schema(mock_osv: object, mock_nvd: obje
         "additionalProperties": False,
     }
     jsonschema.validate(dumped, osv_schema)
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_cwe_dedup(mock_osv: object, mock_nvd: object) -> None:
+    """Two CVEs sharing the same CWE produce a deduplicated cwe_ids list."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    cwe_flaw = {
+        "count": 1,
+        "results": [
+            {
+                "vulnerability_id": "",
+                "cve_id": None,
+                "title": "T",
+                "impact": "HIGH",
+                "cwe_id": "CWE-79",
+                "cvss_scores": [],
+                "cve_description": "",
+                "comment_zero": "",
+                "references": [],
+                "affects": [],
+                "components": [],
+                "embargoed": False,
+                "visibility": "PUBLIC",
+            }
+        ],
+    }
+    with patch.object(client, "_get", return_value=cwe_flaw):
+        doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
+        results = convert(doc, osidb_client=client)
+    db = results[0].database_specific
+    assert db is not None
+    assert db.lightwell.cwe_ids == ["CWE-79"]
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_cwe_empty_when_no_osidb(mock_osv: object, mock_nvd: object) -> None:
+    """When OSIDB returns no CWE data, cwe_ids is an empty list."""
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    db = results[0].database_specific
+    assert db is not None
+    assert db.lightwell.cwe_ids == []
