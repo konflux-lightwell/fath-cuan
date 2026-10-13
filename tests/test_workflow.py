@@ -52,9 +52,13 @@ def test_process_osv_passes_jira_client(mock_jira: MagicMock) -> None:
     mock_jira.assert_called_once_with("LW-2026-0468", client)
 
 
-def test_process_vex_raises_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        process_vex(SAMPLE_INPUT_DATA)
+@patch("fath_cuan.converters.vex._prefetch_enrichment", return_value={"osidb_meta": None, "upstream": None, "nvd": None})
+def test_process_vex_returns_vex_result(mock_enrich: object) -> None:
+    from fath_cuan.converters.vex import VEXResult
+
+    result = process_vex(SAMPLE_INPUT_DATA)
+    assert isinstance(result, VEXResult)
+    assert len(result.per_cve) == 1
 
 
 PYPI_BUILD_INDEX = {
@@ -77,6 +81,10 @@ def test_process_osv_dispatches_to_build_index(mock_osv: object, mock_nvd: objec
     assert result[0]["affected"][0]["package"]["purl"] == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
 
 
-def test_process_vex_build_index_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        process_vex(PYPI_BUILD_INDEX)
+@patch("fath_cuan.converters.vex._prefetch_enrichment", return_value={"osidb_meta": None, "upstream": None, "nvd": None})
+def test_process_vex_build_index_returns_vex_result(mock_enrich: object) -> None:
+    from fath_cuan.converters.vex import VEXResult
+
+    result = process_vex(PYPI_BUILD_INDEX)
+    assert isinstance(result, VEXResult)
+    assert len(result.per_cve) == 1
