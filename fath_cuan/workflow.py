@@ -5,6 +5,7 @@ from typing import Any
 
 from fath_cuan.converters import osv as osv_converter
 from fath_cuan.converters import vex as vex_converter
+from fath_cuan.converters.vex import VEXResult
 from fath_cuan.jira.client import JiraClient
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
@@ -58,12 +59,44 @@ def process_osv(
     return [d.model_dump(exclude_none=True) for d in osv_docs]
 
 
-def process_vex(input_json: dict[str, Any]) -> dict[str, Any]:
+def process_vex(
+    input_json: dict[str, Any],
+    osidb_client: OsidbClient | None = None,
+    sbom_serial_numbers: dict[str, str] | None = None,
+) -> VEXResult:
+    """Generate CycloneDX 1.7 VEX documents from input JSON.
+
+    Accepts either the unified build-index or the legacy PNC gav-index,
+    dispatching on the input shape. Returns a VEXResult containing per-CVE
+    documents and a multi-CVE aggregate document.
+
+    Args:
+        input_json: Build-index or gav-index dict.
+        osidb_client: Optional OSIDB client for enrichment data.
+        sbom_serial_numbers: Map of PURL -> SBOM serialNumber for
+            cross-referencing VEX affects[].ref to SBOMs.
+
+    Returns:
+        VEXResult with per_cve and multi_cve documents.
+    """
     if _is_build_index(input_json):
-        raise NotImplementedError("VEX conversion not yet implemented for build-index inputs")
-    logger.info("Processing VEX records for %s", input_json.get("primaryGav", ""))
+        logger.info(
+            "Processing VEX from build-index (%s)",
+            input_json.get("ecosystem", ""),
+        )
+        bi = BuildIndex.from_dict(input_json)
+        return vex_converter.convert_build_index(
+            bi,
+            osidb_client=osidb_client,
+            sbom_serial_numbers=sbom_serial_numbers,
+        )
+
+    logger.info(
+        "Processing VEX for %s", input_json.get("primaryGav", "")
+    )
     doc = InputDocument.from_dict(input_json)
-    logger.info("Converting to VEX record")
-    vex_doc = vex_converter.convert(doc)
-    logger.info("Converted VEX record")
-    return vex_doc.model_dump(exclude_none=True)
+    return vex_converter.convert(
+        doc,
+        osidb_client=osidb_client,
+        sbom_serial_numbers=sbom_serial_numbers,
+    )
