@@ -172,27 +172,31 @@ def process(
 
     if output_format in ("vex", "all"):
         try:
-            vex_result = process_vex(raw)
-        except Exception as e:
+            # Production SBOM cross-referencing happens in slan-cuan;
+            # the CLI is a local converter for testing.
+            vex_result = process_vex(raw, osidb_client=osidb_client)
+        except (ValueError, NotImplementedError) as e:
             if output_format == "all":
                 click.echo(f"WARNING: skipping VEX — {e}", err=True)
             else:
                 raise click.ClickException(str(e)) from e
         else:
             if use_stdout:
-                import json as _json
-
                 for _cve_id, doc in vex_result.per_cve:
-                    click.echo(_json.dumps(doc, indent=2))
+                    write_to_stdout(doc)
                 if vex_result.multi_cve:
-                    click.echo(_json.dumps(vex_result.multi_cve, indent=2))
+                    write_to_stdout(vex_result.multi_cve)
             else:
                 for cve_id, doc in vex_result.per_cve:
                     filename = f"{cve_id}.vex.bom.json"
                     path = write_to_file(doc, output_dir, filename)
                     click.echo(f"Wrote {path}")
                 if vex_result.multi_cve:
-                    path = write_to_file(vex_result.multi_cve, output_dir, "vex.bom.json")
+                    path = write_to_file(
+                        vex_result.multi_cve,
+                        output_dir,
+                        "vex.bom.json",
+                    )
                     click.echo(f"Wrote {path}")
 
 
