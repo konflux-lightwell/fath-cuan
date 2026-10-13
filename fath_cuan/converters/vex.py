@@ -54,11 +54,6 @@ class VEXResult:
     multi_cve: dict[str, Any] | None
 
 
-# ---------------------------------------------------------------------------
-# Enrichment
-# ---------------------------------------------------------------------------
-
-
 def _prefetch_enrichment(cve_id: str, osidb_client: OsidbClient | None) -> dict[str, Any]:
     """Fetch OSIDB, upstream OSV, and NVD data for a single CVE."""
     osidb_meta: dict[str, Any] | None = None
@@ -71,23 +66,17 @@ def _prefetch_enrichment(cve_id: str, osidb_client: OsidbClient | None) -> dict[
     return {"osidb_meta": osidb_meta, "upstream": upstream, "nvd": nvd}
 
 
-# ---------------------------------------------------------------------------
-# Advisories
-# ---------------------------------------------------------------------------
-
-
 def _build_advisories(upstream: dict[str, Any] | None, cve_id: str) -> list[CdxAdvisory]:
-    """Build advisory links: NVD, upstream issue, fix commit."""
-    advisories: list[CdxAdvisory] = [
-        CdxAdvisory(
-            url=f"{_NVD_DETAIL}{cve_id}",
-            title=f"NVD entry for {cve_id}",
-        )
-    ]
+    """Build advisory links: NVD, issue, fix commit."""
+    advisories: list[CdxAdvisory] = []
+    nvd_url = f"{_NVD_DETAIL}{cve_id}"
+    advisories.append(CdxAdvisory(url=nvd_url, title=f"NVD entry for {cve_id}"))
+
     if not upstream:
         return advisories
 
-    for r in upstream.get("references", []):
+    refs = upstream.get("references", [])
+    for r in refs:
         url = r.get("url", "")
         if not url or not _is_public_url(url):
             continue
@@ -97,93 +86,55 @@ def _build_advisories(upstream: dict[str, Any] | None, cve_id: str) -> list[CdxA
             advisories.append(CdxAdvisory(url=url, title="Upstream fix commit"))
         elif "/security/" in url or "/advisory/" in url or "/advisories/" in url:
             advisories.append(CdxAdvisory(url=url, title="Upstream security advisory"))
+
     return advisories
 
 
 # ---------------------------------------------------------------------------
-# Ratings — no local CVSS calculator; scores come from OSIDB or NVD only.
+# CVSS ratings — no local calculator; scores come from OSIDB or NVD only.
 # ---------------------------------------------------------------------------
 
 
-def _extract_nvd_score(
-    nvd: dict[str, Any] | None,
-) -> tuple[float, str, str, str]:
-    """Extract numeric score + severity + method + vector from NVD.
+def _extract_osidb_score(
+    osidb_meta: dict[str, Any],
+) -> tuple[str, float, str] | None:
+    """Extract (vector, numeric_score, method) from OSIDB metadata.
 
-    Returns (score, severity, method, vector) or (0, "", "", "").
+    OSIDB ``cvss_scores`` carries the vector string. The numeric score
+    is obtained from the raw flaw's ``cvss_scores[].score`` field when
+    ``extract_osidb_metadata`` populates ``numeric_score``.  Falls back
+    to NVD if the numeric score is absent.
     """
-    if not nvd:
-        return 0.0, "", "", ""
+    for cv in osidb_meta.get("cvss_vectors", []):
+        vector = cv.get("score", "")
+        if not vector:
+            continue
+        numeric = cv.get("numeric_score")
+        if numeric is None or numeric <= 0:
+            return None
+        method = "CVSSv4" if cv.get("type") == "CVSS_V4" else "CVSSv31"
+        return vector, float(numeric), method
+    return None
+
+
+def _extract_nvd_score(
+    nvd: dict[str, Any],
+) -> tuple[str, float, str] | None:
+    """Extract (vector, baseScore, method) from NVD CVE data."""
     metrics = nvd.get("metrics", {})
     for v31 in metrics.get("cvssMetricV31", []):
         data = v31.get("cvssData", {})
-        score = data.get("baseScore", 0.0)
         vector = data.get("vectorString", "")
-        if score:
-            return (
-                float(score),
-                _score_to_severity(float(score)),
-                "CVSSv31",
-                vector,
-            )
+        base = data.get("baseScore")
+        if vector and base is not None:
+            return vector, float(base), "CVSSv31"
     for v40 in metrics.get("cvssMetricV40", []):
         data = v40.get("cvssData", {})
-        score = data.get("baseScore", 0.0)
         vector = data.get("vectorString", "")
-        if score:
-            return (
-                float(score),
-                _score_to_severity(float(score)),
-                "CVSSv4",
-                vector,
-            )
-    return 0.0, "", "", ""
-
-
-def _build_ratings(
-    osidb_meta: dict[str, Any] | None,
-    upstream: dict[str, Any] | None,
-    nvd: dict[str, Any] | None,
-) -> list[CdxRating]:
-    """Build CVSS ratings from OSIDB or NVD (in priority order).
-
-    No local CVSS score calculation — numeric scores come directly from
-    the authoritative source or the VEX entry has empty ratings.
-    """
-    # OSIDB is authoritative
-    if osidb_meta:
-        for cv in osidb_meta.get("cvss_vectors", []):
-            vector = cv.get("score", "")
-            numeric = cv.get("numeric_score", 0.0)
-            if not vector:
-                continue
-            if numeric:
-                method = "CVSSv4" if cv.get("type") == "CVSS_V4" else "CVSSv31"
-                return [
-                    CdxRating(
-                        source=CdxSource(name="Red Hat Lightwell"),
-                        method=method,
-                        score=float(numeric),
-                        severity=_score_to_severity(float(numeric)),
-                        vector=vector,
-                    )
-                ]
-
-    # NVD fallback (carries baseScore as a float)
-    score, severity, method, vector = _extract_nvd_score(nvd)
-    if score:
-        return [
-            CdxRating(
-                source=CdxSource(name="Red Hat Lightwell"),
-                method=method,
-                score=score,
-                severity=severity,
-                vector=vector,
-            )
-        ]
-
-    # No authoritative score available
-    return []
+        base = data.get("baseScore")
+        if vector and base is not None:
+            return vector, float(base), "CVSSv4"
+    return None
 
 
 def _score_to_severity(score: float) -> str:
@@ -199,15 +150,40 @@ def _score_to_severity(score: float) -> str:
     return "unknown"
 
 
+def _build_ratings(
+    osidb_meta: dict[str, Any] | None,
+    nvd: dict[str, Any] | None,
+) -> list[CdxRating]:
+    """Build CVSS ratings from OSIDB or NVD. Empty when neither has a score."""
+    result = None
+    if osidb_meta:
+        result = _extract_osidb_score(osidb_meta)
+    if result is None and nvd:
+        result = _extract_nvd_score(nvd)
+    if result is None:
+        return []
+    vector, score, method = result
+    return [
+        CdxRating(
+            source=CdxSource(name="Red Hat Lightwell"),
+            method=method,
+            score=score,
+            severity=_score_to_severity(score),
+            vector=vector,
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
-# CWE collection (output disabled per LWLP-2370)
+# CWE extraction (collected but not emitted — LWLP-2370)
 # ---------------------------------------------------------------------------
 
 
 def _extract_cwe_ids(osidb_meta: dict[str, Any] | None, nvd: dict[str, Any] | None) -> list[int]:
     """Collect CWE IDs from OSIDB and NVD.
 
-    LWLP-2370: collected but excluded from VEX serialization.
+    LWLP-2370: CWE enrichment code collects IDs here, but VEX output
+    omits them until CWE + CSAF enrichment are confirmed ready together.
     """
     cwe_ids: list[int] = []
     seen: set[int] = set()
@@ -238,6 +214,7 @@ def _extract_cwe_ids(osidb_meta: dict[str, Any] | None, nvd: dict[str, Any] | No
                             cwe_ids.append(cwe_num)
                     except ValueError:
                         pass
+
     return cwe_ids
 
 
@@ -250,9 +227,10 @@ def _extract_upstream_fix(
     upstream: dict[str, Any] | None,
     osv_ecosystem: str = "Maven",
 ) -> tuple[str, str]:
-    """Extract upstream package name and fix version from OSV data.
+    """Extract the upstream package name and fix version from OSV data.
 
-    Returns (upstream_name, fix_version) or ("", "").
+    Returns (upstream_name, fix_version). Falls back to ("", "") when the
+    upstream data has no matching ECOSYSTEM range with a fixed event.
     """
     if not upstream:
         return "", ""
@@ -277,7 +255,7 @@ def _build_recommendation(
     upstream_name: str,
     upstream_fix_version: str,
 ) -> str:
-    """Build update recommendation text."""
+    """Build update recommendation text matching gold standard."""
     fix_name = upstream_name.split(":")[-1] if upstream_name else artifact_name
     fix_ver = upstream_fix_version or "a newer release"
     return (
@@ -293,9 +271,10 @@ def _build_recommendation(
 
 
 def _build_affects_ref(sbom_serial_number: str, version: int, purl: str) -> str:
-    """Build URN cross-reference to an SBOM component.
+    """Build the URN cross-reference to an SBOM component.
 
-    Uses bare PURL (no qualifiers) matching gold standard.
+    Format: urn:cdx:<sbom-uuid>/<version>#<purl-encoded>
+    Uses the bare PURL (without qualifiers) matching the gold standard.
     """
     sbom_uuid = sbom_serial_number
     if sbom_uuid.startswith("urn:uuid:"):
@@ -306,34 +285,33 @@ def _build_affects_ref(sbom_serial_number: str, version: int, purl: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Embargo stub
+# Embargo handling
 # ---------------------------------------------------------------------------
+
+_EMBARGO_ANALYSIS = CdxAnalysis(state="in_triage")
 
 
 def _build_embargo_stub(
     cve_id: str,
-    affects_entries: list[CdxAffects],
     timestamp: str,
 ) -> CdxVulnerability:
     """Build a minimal VEX entry for an embargoed CVE.
 
-    Contains only the CVE ID and analysis state — no enrichment data,
-    ratings, advisories, or recommendation text. Safe for accidental
-    public exposure: discloses nothing beyond the CVE ID itself.
+    Contains only the CVE ID and state — no enrichment data, ratings,
+    advisories, or recommendation text. Safe for accidental disclosure.
     """
     return CdxVulnerability(
         bom_ref=str(uuid4()),
         id=cve_id,
         source=CdxSource(name="NVD", url=f"{_NVD_DETAIL}{cve_id}"),
-        analysis=CdxAnalysis(state="in_triage"),
-        affects=affects_entries,
+        analysis=_EMBARGO_ANALYSIS,
         published=timestamp,
         updated=timestamp,
     )
 
 
 # ---------------------------------------------------------------------------
-# Per-vulnerability builder
+# Vulnerability builder
 # ---------------------------------------------------------------------------
 
 
@@ -343,24 +321,28 @@ def _build_vulnerability(
     affects_entries: list[CdxAffects],
     artifact_name: str,
     version: str,
-    osv_ecosystem: str,
     timestamp: str,
+    osv_ecosystem: str = "Maven",
 ) -> CdxVulnerability:
-    """Build a CycloneDX vulnerability entry from enrichment data."""
+    """Build a single CycloneDX vulnerability entry."""
     osidb_meta = enrichment.get("osidb_meta")
     upstream = enrichment.get("upstream")
     nvd = enrichment.get("nvd")
+
+    if not osidb_meta and not upstream and not nvd:
+        logger.warning(
+            "No enrichment data for %s; ratings/advisories sparse",
+            cve_id,
+        )
 
     upstream_name, upstream_fix_version = _extract_upstream_fix(upstream, osv_ecosystem)
     recommendation = _build_recommendation(
         artifact_name, version, upstream_name, upstream_fix_version
     )
-    advisories = _build_advisories(upstream, cve_id)
-    ratings = _build_ratings(osidb_meta, upstream, nvd)
-    cwe_ids = _extract_cwe_ids(osidb_meta, nvd)
 
-    if not ratings and not advisories[1:]:
-        logger.warning("No enrichment data for %s; ratings/advisories sparse", cve_id)
+    advisories = _build_advisories(upstream, cve_id)
+    ratings = _build_ratings(osidb_meta, nvd)
+    cwe_ids = _extract_cwe_ids(osidb_meta, nvd)
 
     return CdxVulnerability(
         bom_ref=str(uuid4()),
@@ -391,7 +373,7 @@ def _build_vulnerability(
 
 
 # ---------------------------------------------------------------------------
-# Shared core for both build-index and legacy InputDocument paths
+# Shared VEX generation core
 # ---------------------------------------------------------------------------
 
 
@@ -402,18 +384,23 @@ def _build_vex_documents(
     timestamp: str,
     osidb_client: OsidbClient | None,
     sbom_serial_numbers: dict[str, str],
+    embargo: bool = False,
+    redact_embargoed: bool = False,
 ) -> VEXResult:
-    """Build per-CVE and multi-CVE VEX documents (shared core)."""
+    """Shared core for VEX generation (both build-index and legacy paths)."""
     if not vulns:
         return VEXResult(per_cve=[], multi_cve=None)
 
     sbom_sns = sbom_serial_numbers
     osv_eco = coord.osv_ecosystem
-    artifact_name = coord.name.split(":")[-1]
 
-    # Filter out LW- (novel/pre-disclosure) IDs — the identifier itself
+    # Filter out LW- novel-fix identifiers — the identifier itself
     # is embargo-sensitive and must not appear in VEX documents.
     cve_vulns = [v for v in dict.fromkeys(vulns) if not v.startswith("LW-")]
+    if len(cve_vulns) < len(set(vulns)):
+        skipped = len(set(vulns)) - len(cve_vulns)
+        logger.info("Skipping %d LW- identifier(s) from VEX generation", skipped)
+
     if not cve_vulns:
         return VEXResult(per_cve=[], multi_cve=None)
 
@@ -425,14 +412,38 @@ def _build_vex_documents(
         enrichment_data = {cve_id: fut.result() for cve_id, fut in futures.items()}
 
     per_cve_docs: list[tuple[str, dict[str, Any]]] = []
-    all_vuln_entries: list[CdxVulnerability] = []
+    all_vex_vulns: list[CdxVulnerability] = []
+    artifact_name = coord.name.split(":")[-1]
 
     for cve_id in cve_vulns:
         enrichment = enrichment_data[cve_id]
         osidb_meta = enrichment.get("osidb_meta")
-        is_embargoed = bool(osidb_meta and osidb_meta.get("embargoed"))
 
-        # Build affects entries (link to SBOM serial numbers)
+        # Embargo handling: emit stub, never full enrichment data.
+        if embargo or (redact_embargoed and osidb_meta and osidb_meta.get("embargoed")):
+            stub = _build_embargo_stub(cve_id, timestamp)
+            all_vex_vulns.append(stub)
+            doc = CdxVEXDocument(
+                serial_number=f"urn:uuid:{uuid4()}",
+                vulnerabilities=[stub],
+            )
+            per_cve_docs.append(
+                (
+                    cve_id,
+                    doc.model_dump(by_alias=True, exclude_none=True),
+                )
+            )
+            continue
+
+        # Non-embargoed but OSIDB says embargoed: drop entirely.
+        if osidb_meta and osidb_meta.get("embargoed"):
+            logger.warning(
+                "Dropping embargoed %s from VEX (not in redact mode)",
+                cve_id,
+            )
+            continue
+
+        # Build affects entries using bare PURL for lookup
         affects: list[CdxAffects] = []
         for c in all_coords:
             sn = sbom_sns.get(c.purl, "")
@@ -453,51 +464,41 @@ def _build_vex_documents(
                     )
                 )
 
-        if is_embargoed:
-            logger.warning("Embargoed %s: emitting stub (no enrichment)", cve_id)
-            vuln = _build_embargo_stub(cve_id, affects, timestamp)
-        else:
-            vuln = _build_vulnerability(
-                cve_id,
-                enrichment,
-                affects,
-                artifact_name,
-                coord.version,
-                osv_eco,
-                timestamp,
-            )
+        vuln = _build_vulnerability(
+            cve_id,
+            enrichment,
+            affects,
+            artifact_name,
+            coord.version,
+            timestamp,
+            osv_ecosystem=osv_eco,
+        )
+        all_vex_vulns.append(vuln)
 
-        all_vuln_entries.append(vuln)
-
-        per_cve_doc = CdxVEXDocument(
+        doc = CdxVEXDocument(
             serial_number=f"urn:uuid:{uuid4()}",
             vulnerabilities=[vuln],
         )
-        per_cve_docs.append(
-            (
-                cve_id,
-                per_cve_doc.model_dump(by_alias=True, exclude_none=True),
-            )
-        )
+        per_cve_docs.append((cve_id, doc.model_dump(by_alias=True, exclude_none=True)))
 
     multi_cve_doc = None
-    if all_vuln_entries:
+    if all_vex_vulns:
         multi_doc = CdxVEXDocument(
             serial_number=f"urn:uuid:{uuid4()}",
-            vulnerabilities=all_vuln_entries,
+            vulnerabilities=all_vex_vulns,
         )
         multi_cve_doc = multi_doc.model_dump(by_alias=True, exclude_none=True)
 
     logger.info(
-        "Generated %d per-CVE VEX + %d multi-CVE VEX",
+        "Generated %d per-CVE VEX + %s multi-CVE VEX",
         len(per_cve_docs),
-        1 if multi_cve_doc else 0,
+        "1" if multi_cve_doc else "0",
     )
     return VEXResult(per_cve=per_cve_docs, multi_cve=multi_cve_doc)
 
 
 # ---------------------------------------------------------------------------
-# Public entry points
+# Public API
 # ---------------------------------------------------------------------------
 
 
@@ -505,11 +506,10 @@ def convert_build_index(
     bi: BuildIndex,
     osidb_client: OsidbClient | None = None,
     sbom_serial_numbers: dict[str, str] | None = None,
+    embargo: bool = False,
+    redact_embargoed: bool = False,
 ) -> VEXResult:
     """Generate VEX documents from a build-index."""
-    if not bi.vulns:
-        return VEXResult(per_cve=[], multi_cve=None)
-
     coord = coordinate_from_purl(
         bi.primary_purl,
         ecosystem=bi.ecosystem,
@@ -541,6 +541,8 @@ def convert_build_index(
         timestamp,
         osidb_client,
         sbom_serial_numbers or {},
+        embargo=embargo,
+        redact_embargoed=redact_embargoed,
     )
 
 
@@ -548,18 +550,18 @@ def convert(
     doc: InputDocument,
     osidb_client: OsidbClient | None = None,
     sbom_serial_numbers: dict[str, str] | None = None,
+    embargo: bool = False,
+    redact_embargoed: bool = False,
 ) -> VEXResult:
     """Generate VEX documents from a legacy PNC InputDocument."""
-    if not doc.vulns:
-        return VEXResult(per_cve=[], multi_cve=None)
-
     coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
     timestamp = doc.created.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     all_coords: list[Coordinate] = []
     for gav in doc.gavs:
         try:
-            all_coords.append(maven_coordinate(gav, doc.upstream_version))
+            c = maven_coordinate(gav, doc.upstream_version)
+            all_coords.append(c)
         except ValueError:
             logger.debug("Skipping unparseable gav %r", gav)
     if not all_coords:
@@ -572,4 +574,6 @@ def convert(
         timestamp,
         osidb_client,
         sbom_serial_numbers or {},
+        embargo=embargo,
+        redact_embargoed=redact_embargoed,
     )
