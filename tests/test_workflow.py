@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from fath_cuan.jira.client import JiraClient
 from fath_cuan.workflow import process_osv, process_vex
 from tests.conftest import SAMPLE_INPUT_DATA, SAMPLE_LW_VULN_DATA
@@ -52,7 +50,17 @@ def test_process_osv_passes_jira_client(mock_jira: MagicMock) -> None:
     mock_jira.assert_called_once_with("LW-2026-0468", client)
 
 
-@patch("fath_cuan.converters.vex._prefetch_enrichment", return_value={"osidb_meta": None, "upstream": None, "nvd": None})
+_NO_ENRICHMENT = {
+    "osidb_meta": None,
+    "upstream": None,
+    "nvd": None,
+}
+
+
+@patch(
+    "fath_cuan.converters.vex._prefetch_enrichment",
+    return_value=_NO_ENRICHMENT,
+)
 def test_process_vex_returns_vex_result(mock_enrich: object) -> None:
     from fath_cuan.converters.vex import VEXResult
 
@@ -81,8 +89,13 @@ def test_process_osv_dispatches_to_build_index(mock_osv: object, mock_nvd: objec
     assert result[0]["affected"][0]["package"]["purl"] == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
 
 
-@patch("fath_cuan.converters.vex._prefetch_enrichment", return_value={"osidb_meta": None, "upstream": None, "nvd": None})
-def test_process_vex_build_index_returns_vex_result(mock_enrich: object) -> None:
+@patch(
+    "fath_cuan.converters.vex._prefetch_enrichment",
+    return_value=_NO_ENRICHMENT,
+)
+def test_process_vex_build_index_returns_vex_result(
+    mock_enrich: object,
+) -> None:
     from fath_cuan.converters.vex import VEXResult
 
     result = process_vex(PYPI_BUILD_INDEX)

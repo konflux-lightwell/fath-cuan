@@ -14,11 +14,9 @@ import logging
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any
-
 from uuid import uuid4
 
 from fath_cuan.converters.osv import (
-    _extract_references,
     _extract_severity,
     _fetch_nvd,
     _fetch_upstream_osv,
@@ -27,7 +25,6 @@ from fath_cuan.converters.osv import (
 from fath_cuan.ecosystems import (
     Coordinate,
     coordinate_from_purl,
-    maven_base_version,
     maven_coordinate,
 )
 from fath_cuan.models.build_index import BuildIndex
@@ -39,8 +36,8 @@ from fath_cuan.models.vex import (
     CdxRating,
     CdxReference,
     CdxSource,
-    CdxVEXDocument,
     CdxVersion,
+    CdxVEXDocument,
     CdxVulnerability,
 )
 from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
@@ -58,9 +55,7 @@ class VEXResult:
     multi_cve: dict[str, Any] | None  # aggregate document (None when 0 vulns)
 
 
-def _prefetch_enrichment(
-    cve_id: str, osidb_client: OsidbClient | None
-) -> dict[str, Any]:
+def _prefetch_enrichment(cve_id: str, osidb_client: OsidbClient | None) -> dict[str, Any]:
     """Fetch OSIDB, upstream OSV, and NVD data for a single CVE."""
     osidb_meta: dict[str, Any] | None = None
     if osidb_client and osidb_client.available:
@@ -72,9 +67,7 @@ def _prefetch_enrichment(
     return {"osidb_meta": osidb_meta, "upstream": upstream, "nvd": nvd}
 
 
-def _build_advisories(
-    upstream: dict[str, Any] | None, cve_id: str
-) -> list[CdxAdvisory]:
+def _build_advisories(upstream: dict[str, Any] | None, cve_id: str) -> list[CdxAdvisory]:
     """Build advisory links from upstream references: NVD, issue, fix commit."""
     advisories: list[CdxAdvisory] = []
     nvd_url = f"{_NVD_DETAIL}{cve_id}"
@@ -190,10 +183,7 @@ def _cvss_score_from_vector(vector: str) -> float:
             pr = 0.50
 
     iss = 1.0 - (1.0 - ci) * (1.0 - ii) * (1.0 - ai)
-    if s == "C":
-        impact = 7.52 * (iss - 0.029) - 3.25 * math.Pow(iss - 0.02, 15) if hasattr(math, "Pow") else 7.52 * (iss - 0.029) - 3.25 * ((iss - 0.02) ** 15)
-    else:
-        impact = 6.42 * iss
+    impact = 7.52 * (iss - 0.029) - 3.25 * ((iss - 0.02) ** 15) if s == "C" else 6.42 * iss
 
     if impact <= 0:
         return 0.0
@@ -220,9 +210,7 @@ def _score_to_severity(score: float) -> str:
     return "unknown"
 
 
-def _extract_cwe_ids(
-    osidb_meta: dict[str, Any] | None, nvd: dict[str, Any] | None
-) -> list[int]:
+def _extract_cwe_ids(osidb_meta: dict[str, Any] | None, nvd: dict[str, Any] | None) -> list[int]:
     """Collect CWE IDs from OSIDB and NVD.
 
     LWLP-2370: CWE enrichment code collects IDs here, but VEX output
@@ -262,7 +250,10 @@ def _extract_cwe_ids(
     return cwe_ids
 
 
-def _extract_upstream_fix(upstream: dict[str, Any] | None, osv_ecosystem: str = "Maven") -> tuple[str, str]:
+def _extract_upstream_fix(
+    upstream: dict[str, Any] | None,
+    osv_ecosystem: str = "Maven",
+) -> tuple[str, str]:
     """Extract the upstream package name and fix version from OSV data.
 
     Returns (upstream_name, fix_version). Falls back to ("", "") when the
@@ -315,7 +306,7 @@ def _build_affects_ref(sbom_serial_number: str, version: int, purl: str) -> str:
     # Strip "urn:uuid:" prefix from serialNumber
     sbom_uuid = sbom_serial_number
     if sbom_uuid.startswith("urn:uuid:"):
-        sbom_uuid = sbom_uuid[len("urn:uuid:"):]
+        sbom_uuid = sbom_uuid[len("urn:uuid:") :]
     # Strip qualifiers from the PURL (everything after '?')
     bare_purl = purl.split("?", 1)[0]
     encoded_purl = urllib.parse.quote(bare_purl, safe="")
@@ -339,7 +330,10 @@ def _build_vulnerability(
     # Extract upstream fix info for recommendation text
     upstream_name, upstream_fix_version = _extract_upstream_fix(upstream)
     recommendation = _build_recommendation(
-        artifact_name, version, upstream_name, upstream_fix_version,
+        artifact_name,
+        version,
+        upstream_name,
+        upstream_fix_version,
     )
 
     advisories = _build_advisories(upstream, cve_id)
@@ -349,7 +343,7 @@ def _build_vulnerability(
     cwe_ids = _extract_cwe_ids(osidb_meta, nvd)
 
     return CdxVulnerability(
-        **{"bom-ref": str(uuid4())},
+        bom_ref=str(uuid4()),
         id=cve_id,
         source=CdxSource(name="NVD", url=f"{_NVD_DETAIL}{cve_id}"),
         analysis=CdxAnalysis(
@@ -404,6 +398,7 @@ def convert_build_index(
         timestamp = bi.created.strftime("%Y-%m-%dT%H:%M:%SZ")
     else:
         from datetime import UTC, datetime
+
         timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     sbom_sns = sbom_serial_numbers or {}
@@ -412,7 +407,11 @@ def convert_build_index(
     all_coords: list[Coordinate] = []
     for purl in bi.purls:
         try:
-            c = coordinate_from_purl(purl, ecosystem=bi.ecosystem, upstream_version=bi.version.upstream)
+            c = coordinate_from_purl(
+                purl,
+                ecosystem=bi.ecosystem,
+                upstream_version=bi.version.upstream,
+            )
             all_coords.append(c)
         except ValueError:
             logger.debug("Skipping unparseable purl %r", purl)
@@ -459,26 +458,28 @@ def convert_build_index(
                 )
 
         vuln = _build_vulnerability(
-            cve_id, enrichment, affects,
-            artifact_name, coord.version, coord.base_version,
+            cve_id,
+            enrichment,
+            affects,
+            artifact_name,
+            coord.version,
+            coord.base_version,
             timestamp,
         )
         all_vulns.append(vuln)
 
         # Per-CVE document
         per_cve_doc = CdxVEXDocument(
-            **{"serialNumber": f"urn:uuid:{uuid4()}"},
+            serial_number=f"urn:uuid:{uuid4()}",
             vulnerabilities=[vuln],
         )
-        per_cve_docs.append(
-            (cve_id, per_cve_doc.model_dump(by_alias=True, exclude_none=True))
-        )
+        per_cve_docs.append((cve_id, per_cve_doc.model_dump(by_alias=True, exclude_none=True)))
 
     # Multi-CVE document (all vulns in one)
     multi_cve_doc = None
     if all_vulns:
         multi_doc = CdxVEXDocument(
-            **{"serialNumber": f"urn:uuid:{uuid4()}"},
+            serial_number=f"urn:uuid:{uuid4()}",
             vulnerabilities=all_vulns,
         )
         multi_cve_doc = multi_doc.model_dump(by_alias=True, exclude_none=True)
@@ -553,24 +554,26 @@ def convert(
                 )
 
         vuln = _build_vulnerability(
-            cve_id, enrichment, affects,
-            artifact_name, coord.version, coord.base_version,
+            cve_id,
+            enrichment,
+            affects,
+            artifact_name,
+            coord.version,
+            coord.base_version,
             timestamp,
         )
         all_vulns.append(vuln)
 
         per_cve_doc = CdxVEXDocument(
-            **{"serialNumber": f"urn:uuid:{uuid4()}"},
+            serial_number=f"urn:uuid:{uuid4()}",
             vulnerabilities=[vuln],
         )
-        per_cve_docs.append(
-            (cve_id, per_cve_doc.model_dump(by_alias=True, exclude_none=True))
-        )
+        per_cve_docs.append((cve_id, per_cve_doc.model_dump(by_alias=True, exclude_none=True)))
 
     multi_cve_doc = None
     if all_vulns:
         multi_doc = CdxVEXDocument(
-            **{"serialNumber": f"urn:uuid:{uuid4()}"},
+            serial_number=f"urn:uuid:{uuid4()}",
             vulnerabilities=all_vulns,
         )
         multi_cve_doc = multi_doc.model_dump(by_alias=True, exclude_none=True)
