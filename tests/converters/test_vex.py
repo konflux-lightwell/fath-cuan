@@ -4,13 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from fath_cuan.converters.vex import VEXResult, convert, convert_build_index
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
 from tests.conftest import SAMPLE_INPUT_DATA
-
 
 SAMPLE_BUILD_INDEX = {
     "ecosystem": "maven",
@@ -21,8 +18,10 @@ SAMPLE_BUILD_INDEX = {
     "created": "2026-08-06T16:00:00+00:00",
 }
 
+_WOODSTOX_PURL = "pkg:maven/com.fasterxml.woodstox/woodstox-core@6.0.3.rhlw-00001"
+
 SAMPLE_SBOM_SERIAL_NUMBERS = {
-    "pkg:maven/com.fasterxml.woodstox/woodstox-core@6.0.3.rhlw-00001": "urn:uuid:4048efaf-e166-4041-b19f-6a1b2fec9293",
+    _WOODSTOX_PURL: "urn:uuid:4048efaf-e166-4041-b19f-6a1b2fec9293",
 }
 
 

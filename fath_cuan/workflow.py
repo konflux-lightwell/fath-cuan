@@ -91,9 +91,7 @@ def process_vex(
             sbom_serial_numbers=sbom_serial_numbers,
         )
 
-    logger.info(
-        "Processing VEX for %s", input_json.get("primaryGav", "")
-    )
+    logger.info("Processing VEX for %s", input_json.get("primaryGav", ""))
     doc = InputDocument.from_dict(input_json)
     return vex_converter.convert(
         doc,
