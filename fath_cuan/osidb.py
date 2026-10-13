@@ -150,7 +150,11 @@ def extract_osidb_metadata(flaw: dict[str, Any]) -> dict[str, Any]:
         version = cs.get("cvss_version", "")
         if vector:
             osv_type = "CVSS_V4" if version == "V4" else "CVSS_V3"
-            meta["cvss_vectors"].append({"type": osv_type, "score": vector})
+            entry: dict[str, Any] = {"type": osv_type, "score": vector}
+            numeric = cs.get("score")
+            if isinstance(numeric, (int, float)):
+                entry["numeric_score"] = float(numeric)
+            meta["cvss_vectors"].append(entry)
 
     _OSIDB_TYPE_MAP: dict[str, str | None] = {
         "ARTICLE": "WEB",
