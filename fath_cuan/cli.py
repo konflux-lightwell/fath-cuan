@@ -172,8 +172,6 @@ def process(
 
     if output_format in ("vex", "all"):
         try:
-            # Production SBOM cross-referencing happens in slan-cuan;
-            # the CLI is a local converter for testing.
             vex_result = process_vex(raw, osidb_client=osidb_client)
         except (ValueError, NotImplementedError) as e:
             if output_format == "all":
