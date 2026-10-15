@@ -270,18 +270,18 @@ def _build_recommendation(
 # ---------------------------------------------------------------------------
 
 
-def _build_affects_ref(sbom_serial_number: str, version: int, purl: str) -> str:
+def _build_affects_ref(sbom_serial_number: str, version: int, bom_ref: str) -> str:
     """Build the URN cross-reference to an SBOM component.
 
-    Format: urn:cdx:<sbom-uuid>/<version>#<purl-encoded>
-    Uses the bare PURL (without qualifiers) matching the gold standard.
+    Format: urn:cdx:<sbom-uuid>/<version>#<bom-ref-encoded>
+    Uses the bom-ref as it appears in the SBOM so the cross-link
+    resolves regardless of qualifier form (bare vs ``?type=jar``).
     """
     sbom_uuid = sbom_serial_number
     if sbom_uuid.startswith("urn:uuid:"):
         sbom_uuid = sbom_uuid[len("urn:uuid:") :]
-    bare_purl = purl.split("?", 1)[0]
-    encoded_purl = urllib.parse.quote(bare_purl, safe="")
-    return f"urn:cdx:{sbom_uuid}/{version}#{encoded_purl}"
+    encoded = urllib.parse.quote(bom_ref, safe="")
+    return f"urn:cdx:{sbom_uuid}/{version}#{encoded}"
 
 
 # ---------------------------------------------------------------------------
@@ -443,15 +443,20 @@ def _build_vex_documents(
             )
             continue
 
-        # Build affects entries using bare PURL for lookup
+        # Build affects entries. The serial-numbers map is keyed by
+        # both the build-index PURL and the bom-ref form used in the
+        # SBOM (may include ?type=jar from PNC). Use whichever key
+        # matched as the fragment in the URN cross-reference.
         affects: list[CdxAffects] = []
         for c in all_coords:
             sn = sbom_sns.get(c.purl, "")
+            bom_ref_key = c.purl
             if not sn:
                 bare = c.purl.split("?", 1)[0]
                 sn = sbom_sns.get(bare, "")
+                bom_ref_key = bare
             if sn:
-                ref = _build_affects_ref(sn, 1, c.purl)
+                ref = _build_affects_ref(sn, 1, bom_ref_key)
                 affects.append(
                     CdxAffects(
                         ref=ref,
