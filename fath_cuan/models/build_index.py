@@ -46,6 +46,16 @@ class BuildIndex(BaseModel):
     primary_purl: str = Field(alias="primaryPurl")
     purls: list[str]
     vulns: list[str] = Field(default_factory=list)
+    # Ride-along artifacts that may ship with this build but were NOT produced
+    # by it -- e.g. dependency wheels fetched from the validated cache for
+    # offline integration testing, or closure content published alongside a
+    # validated build. Release-scope metadata ONLY: OSV generation resolves
+    # affected modules exclusively against ``purls`` (the modules this build
+    # produced from its patched source). A CVE in a ride-along dependency is
+    # attributed by that dependency's own remediated build index, never by
+    # this one -- see the guard tests in
+    # tests/converters/test_osv_affected_resolution.py.
+    extra_purls: list[str] = Field(default_factory=list, alias="extraPurls")
     # Not part of the minimal proposal schema, but OSV records need a
     # published/modified timestamp. Optional; the converter defaults to the
     # current UTC time when absent.
@@ -136,6 +146,24 @@ class BuildIndex(BaseModel):
                 f"remediation build (b={self.version.b}, n={self.version.n}, "
                 f"vulns={len(self.vulns)}) must carry a version.full distinct from "
                 f"version.upstream ('{self.version.upstream}')"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _extra_purls_disjoint_from_purls(self) -> BuildIndex:
+        """``extraPurls`` must be disjoint from ``purls``.
+
+        An overlap means the producer is ambivalent about whether a module was
+        produced by this build: a module in ``purls`` drives OSV
+        affected-module matching, so a stray duplicate in ``extraPurls``
+        suggests the release scope and the OSV attribution scope disagree.
+        Fail loudly at the schema boundary rather than let the ambiguity
+        through.
+        """
+        overlap = sorted(set(self.extra_purls) & set(self.purls))
+        if overlap:
+            raise ValueError(
+                f"extraPurls must be disjoint from purls; these appear in both: {overlap}"
             )
         return self
 

@@ -899,6 +899,13 @@ def convert_build_index(
         ecosystem=bi.ecosystem,
         upstream_version=bi.version.upstream,
     )
+    # OSV affected-module matching uses ONLY ``purls`` -- the modules this
+    # build produced from its (patched) source. ``bi.extra_purls`` (ride-along
+    # artifacts: validated-cache deps, closure content) is deliberately NOT
+    # passed here: a CVE naming such a package must be attributed by that
+    # package's own remediated build index, never this one. Guarded by
+    # tests/converters/test_osv_affected_resolution.py
+    # (test_extra_purls_*); do not widen this call to include extras.
     built_coords = _purl_built_coords(bi.purls, bi.ecosystem, bi.version.upstream)
     created = bi.created if bi.created else datetime.now(UTC)
     return _build_records(
