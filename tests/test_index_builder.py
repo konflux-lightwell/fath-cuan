@@ -330,3 +330,123 @@ def test_clean_build_allows_empty_vulns() -> None:
         vuln_resolver=_no_vulns,
     )
     assert doc["vulns"] == []
+
+
+# --- produced_purls and extra_purls (LWLP-3276) ---
+
+
+def test_produced_purls_added_to_purls() -> None:
+    doc = build_index_document(
+        version_local="7.6.12+rhlw.1",
+        purl="pkg:pypi/coverage@7.6.12",
+        produced_purls=["pkg:pypi/coverage-companion@7.6.12%2Brhlw.1"],
+        vuln_resolver=_no_vulns,
+    )
+    assert doc["purls"] == [
+        "pkg:pypi/coverage@7.6.12%2Brhlw.1",
+        "pkg:pypi/coverage-companion@7.6.12%2Brhlw.1",
+    ]
+
+
+def test_produced_purls_dedup_and_primary_equal_dropped() -> None:
+    doc = build_index_document(
+        version_local="7.6.12+rhlw.1",
+        purl="pkg:pypi/coverage@7.6.12",
+        produced_purls=[
+            "pkg:pypi/coverage@7.6.12%2Brhlw.1",  # duplicate of primary
+            "pkg:pypi/coverage-companion@7.6.12%2Brhlw.1",
+            "pkg:pypi/coverage-companion@7.6.12%2Brhlw.1",  # duplicate within list
+        ],
+        vuln_resolver=_no_vulns,
+    )
+    assert doc["purls"] == [
+        "pkg:pypi/coverage@7.6.12%2Brhlw.1",
+        "pkg:pypi/coverage-companion@7.6.12%2Brhlw.1",
+    ]
+
+
+def test_produced_purls_ecosystem_mismatch_rejected() -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage@7.6.12",
+            produced_purls=["pkg:maven/org.example/companion@1.0.0"],
+            vuln_resolver=_no_vulns,
+        )
+
+
+def test_extra_purls_added_to_extra_purls() -> None:
+    doc = build_index_document(
+        version_local="7.6.12+rhlw.1",
+        purl="pkg:pypi/coverage@7.6.12",
+        extra_purls=["pkg:pypi/fastuuid@1.0.0"],
+        vuln_resolver=_no_vulns,
+    )
+    assert doc["extraPurls"] == ["pkg:pypi/fastuuid@1.0.0"]
+
+
+def test_extra_purls_ecosystem_mismatch_rejected() -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage@7.6.12",
+            extra_purls=["pkg:maven/org.example/dep@1.0.0"],
+            vuln_resolver=_no_vulns,
+        )
+
+
+def test_disjointness_error_surfaces_with_context_primary_overlap() -> None:
+    expected = (
+        r"extraPurls must be disjoint from purls; these appear in both: "
+        r"\['pkg:pypi/coverage@7\.6\.12%2Brhlw\.1'\]"
+    )
+    with pytest.raises(ValueError, match=expected):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage@7.6.12",
+            extra_purls=["pkg:pypi/coverage@7.6.12%2Brhlw.1"],
+            vuln_resolver=_no_vulns,
+        )
+
+
+def test_disjointness_error_surfaces_with_context_produced_overlap() -> None:
+    expected = (
+        r"extraPurls must be disjoint from purls; these appear in both: "
+        r"\['pkg:pypi/companion@1\.0\.0'\]"
+    )
+    with pytest.raises(ValueError, match=expected):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage@7.6.12",
+            produced_purls=["pkg:pypi/companion@1.0.0"],
+            extra_purls=["pkg:pypi/companion@1.0.0"],
+            vuln_resolver=_no_vulns,
+        )
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_produced_purl_companion_gets_osv_attribution(mock_osv: object, mock_nvd: object) -> None:
+    """Companions built via build_index_document land in purls and get OSV attribution."""
+    mock_osv.return_value = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "litellm-extra"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            }
+        ]
+    }
+    doc = build_index_document(
+        version_local="1.0.0+rhlw.1",
+        version_upstream="1.0.0",
+        purl="pkg:pypi/litellm@1.0.0",
+        b=1,
+        vulns=["CVE-2026-9999"],
+        produced_purls=["pkg:pypi/litellm-extra@1.0.0%2Brhlw.1"],
+        extra_purls=["pkg:pypi/fastuuid@1.0.0"],
+        vuln_resolver=_fixed_vulns,
+    )
+    records = process_osv(doc)
+    assert len(records) == 1
+    assert records[0]["affected"][0]["package"]["name"] == "litellm-extra"
+    assert records[0]["affected"][0]["package"]["purl"] == "pkg:pypi/litellm-extra@1.0.0%2Brhlw.1"
