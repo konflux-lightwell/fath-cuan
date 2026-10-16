@@ -172,7 +172,12 @@ def process(
 
     if output_format in ("vex", "all"):
         try:
-            vex_result = process_vex(raw, osidb_client=osidb_client)
+            vex_result = process_vex(
+                raw,
+                osidb_client=osidb_client,
+                embargo=embargo,
+                redact_embargoed=redact_embargoed,
+            )
         except (ValueError, NotImplementedError) as e:
             if output_format == "all":
                 click.echo(f"WARNING: skipping VEX — {e}", err=True)

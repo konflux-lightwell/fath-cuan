@@ -443,18 +443,23 @@ def _build_vex_documents(
             )
             continue
 
-        # Build affects entries. The serial-numbers map is keyed by
-        # both the build-index PURL and the bom-ref form used in the
-        # SBOM (may include ?type=jar from PNC). Use whichever key
-        # matched as the fragment in the URN cross-reference.
+        # Build affects entries. The serial-numbers map may be keyed
+        # by a qualified bom-ref (e.g. ?type=jar from PNC) while
+        # c.purl is always bare (from PackageURL.to_string()). Try
+        # the bare form first, then scan for a qualified key that
+        # starts with the bare PURL.
         affects: list[CdxAffects] = []
         for c in all_coords:
-            sn = sbom_sns.get(c.purl, "")
-            bom_ref_key = c.purl
+            bare = c.purl.split("?", 1)[0]
+            sn = sbom_sns.get(c.purl) or sbom_sns.get(bare)
+            bom_ref_key = bare
             if not sn:
-                bare = c.purl.split("?", 1)[0]
-                sn = sbom_sns.get(bare, "")
-                bom_ref_key = bare
+                # Scan for a qualified key matching this coordinate
+                for k, v in sbom_sns.items():
+                    if k.split("?", 1)[0] == bare:
+                        sn = v
+                        bom_ref_key = k
+                        break
             if sn:
                 ref = _build_affects_ref(sn, 1, bom_ref_key)
                 affects.append(
