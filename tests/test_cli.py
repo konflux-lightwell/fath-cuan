@@ -249,6 +249,74 @@ class TestIndexCreate:
         assert "--version-local" in result.output
         assert "--purl" in result.output
         assert "--require-vuln" in result.output
+        assert "--produced-purl" in result.output
+        assert "--extra-purl" in result.output
+        assert "OSV attribution" in result.output
+        assert "never drives OSV" in result.output
+
+    def test_produced_and_extra_purls(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--purl",
+                "pkg:pypi/litellm@1.0.0",
+                "--version-upstream",
+                "1.0.0",
+                "--version-local",
+                "1.0.0+rhlw.1",
+                "--produced-purl",
+                "pkg:pypi/litellm-extra@1.0.0%2Brhlw.1",
+                "--extra-purl",
+                "pkg:pypi/fastuuid@1.0.0",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["purls"] == [
+            "pkg:pypi/litellm@1.0.0%2Brhlw.1",
+            "pkg:pypi/litellm-extra@1.0.0%2Brhlw.1",
+        ]
+        assert data["extraPurls"] == ["pkg:pypi/fastuuid@1.0.0"]
+
+    def test_disjointness_error(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--purl",
+                "pkg:pypi/coverage@7.6.12",
+                "--version-local",
+                "7.6.12+rhlw.1",
+                "--extra-purl",
+                "pkg:pypi/coverage@7.6.12%2Brhlw.1",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "extraPurls must be disjoint from purls" in result.output
+        assert "pkg:pypi/coverage@7.6.12%2Brhlw.1" in result.output
+
+    def test_ecosystem_mismatch_error(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "index",
+                "create",
+                "--purl",
+                "pkg:pypi/coverage@7.6.12",
+                "--version-local",
+                "7.6.12+rhlw.1",
+                "--produced-purl",
+                "pkg:maven/org.example/mod@1.0",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "does not match" in result.output
 
 
 class TestIndexMigrate:

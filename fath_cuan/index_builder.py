@@ -12,13 +12,18 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import ValidationError
+
 from fath_cuan.ecosystems import (
     Coordinate,
     maven_coordinate,
     pypi_coordinate,
 )
 from fath_cuan.gittrailers import ResolvedVulns, resolve_vulns
-from fath_cuan.models.build_index import BuildIndex
+from fath_cuan.models.build_index import (
+    BuildIndex,
+    _canonical_purl,
+)
 from fath_cuan.models.input import InputDocument
 
 logger = logging.getLogger(__name__)
@@ -30,7 +35,14 @@ def _finalize(payload: dict[str, Any]) -> dict[str, Any]:
     Uses ``mode="json"`` so nested datetimes serialize to ISO strings, and
     drops an empty ``buildId`` so a manually-created index isn't cluttered.
     """
-    bi = BuildIndex.model_validate(payload)
+    try:
+        bi = BuildIndex.model_validate(payload)
+    except ValidationError as e:
+        for err in e.errors():
+            msg = err.get("msg", "")
+            if "extraPurls must be disjoint from purls" in msg:
+                raise ValueError(msg.removeprefix("Value error, ")) from e
+        raise
     data: dict[str, Any] = bi.model_dump(mode="json", by_alias=True, exclude_none=True)
     if not data.get("buildId"):
         data.pop("buildId", None)
@@ -55,6 +67,18 @@ def _split_purl(purl: str) -> tuple[str, str, str | None]:
     if not sep:  # no @version — versionless coordinate
         coord, version = rest, ""
     return type_part.lower(), coord, (version or None)
+
+
+def _validate_purl_ecosystem(purl: str, expected_ecosystem: str, label: str) -> None:
+    """Validate that a PURL's ecosystem matches the build ecosystem and includes a version."""
+    eco, _, version = _split_purl(purl)
+    if not version:
+        raise ValueError(f"purl must include a version: {purl}")
+    if eco != expected_ecosystem:
+        raise ValueError(
+            f"{label} '{purl}' ecosystem '{eco}' does not match "
+            f"build ecosystem '{expected_ecosystem}'"
+        )
 
 
 def _warn_ignored_version(
@@ -126,6 +150,8 @@ def build_index_document(
     build_id: str = "",
     require_vuln: bool = False,
     *,
+    produced_purls: list[str] | None = None,
+    extra_purls: list[str] | None = None,
     vuln_resolver: Callable[..., ResolvedVulns] = resolve_vulns,
 ) -> dict[str, Any]:
     """Build a build-index document (as a dict) from create-command inputs.
@@ -134,6 +160,14 @@ def build_index_document(
     ``require_vuln`` is set, or the version decomposition implies a remediation
     (``b > 0`` or ``n > 0``), an empty resolution is a hard error rather than a
     clean-build index.
+
+    ``produced_purls``: additional PURLs produced by this build (monorepo
+    companions). These land in ``purls`` and drive BOTH OSV attribution and the
+    release allow-list.
+
+    ``extra_purls``: ride-along PURLs not produced by this build (dependency
+    wheels from the validated cache). These land in ``extraPurls`` and are
+    release-scope ONLY -- they must NEVER drive OSV attribution.
     """
     coord = _resolve_coordinate(ecosystem, purl, gav, version_local, version_upstream)
     remediation = require_vuln or b > 0 or n > 0
@@ -174,16 +208,37 @@ def build_index_document(
             resolved.tier,
             ", ".join(resolved.vulns),
         )
-    return _finalize(
-        {
-            "buildId": build_id,
-            "ecosystem": coord.ecosystem,
-            "version": {"upstream": coord.base_version, "full": coord.version, "b": b, "n": n},
-            "primaryPurl": coord.purl,
-            "purls": [coord.purl],
-            "vulns": resolved.vulns,
-        }
-    )
+
+    produced: list[str] = []
+    seen: set[str] = {_canonical_purl(coord.purl)}
+    for p in produced_purls or []:
+        _validate_purl_ecosystem(p, coord.ecosystem, "produced PURL")
+        canon = _canonical_purl(p)
+        if canon not in seen:
+            seen.add(canon)
+            produced.append(p)
+
+    extras: list[str] = []
+    seen_extras: set[str] = set()
+    for p in extra_purls or []:
+        _validate_purl_ecosystem(p, coord.ecosystem, "extra PURL")
+        canon = _canonical_purl(p)
+        if canon not in seen_extras:
+            seen_extras.add(canon)
+            extras.append(p)
+
+    payload: dict[str, Any] = {
+        "buildId": build_id,
+        "ecosystem": coord.ecosystem,
+        "version": {"upstream": coord.base_version, "full": coord.version, "b": b, "n": n},
+        "primaryPurl": coord.purl,
+        "purls": [coord.purl, *produced],
+        "vulns": resolved.vulns,
+    }
+    if extras:
+        payload["extraPurls"] = extras
+
+    return _finalize(payload)
 
 
 def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:

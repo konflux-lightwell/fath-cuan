@@ -4,7 +4,8 @@ build produced — NOT the build's arbitrary primary coordinate (primaryGav)."""
 
 from unittest.mock import patch
 
-from fath_cuan.converters.osv import convert
+from fath_cuan.converters.osv import convert, convert_build_index
+from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
 from fath_cuan.osidb import OsidbClient
 
@@ -313,3 +314,96 @@ def test_multi_cve_different_modules(mock_osv: object, mock_nvd: object) -> None
     assert len(advisory.affected) == 2
     for aff in advisory.affected:
         assert aff.package.ecosystem == "Red Hat Lightwell:Maven"
+
+
+# ── extraPurls: ride-along artifacts must never drive OSV attribution ────────
+#
+# extraPurls lists artifacts that may ship with a build but were NOT produced
+# by it (validated-cache deps, closure content). OSV affected-module matching
+# must treat them as invisible: a CVE in a ride-along dependency is attributed
+# by that dependency's OWN remediated build index, never this one.
+
+_LITELLM_RIDE_ALONG_INDEX = {
+    "buildId": "B3",
+    "ecosystem": "pypi",
+    "created": "2026-07-15T14:02:27+00:00",
+    "version": {"upstream": "1.0.0", "full": "1.0.0+rhlw.1", "b": 1, "n": 0},
+    "primaryPurl": "pkg:pypi/litellm@1.0.0%2Brhlw.1",
+    "purls": ["pkg:pypi/litellm@1.0.0%2Brhlw.1"],
+    "extraPurls": ["pkg:pypi/fastuuid@1.0.0"],
+    "vulns": ["CVE-2026-9999"],
+}
+
+_FASTUUID_UPSTREAM = {
+    "affected": [
+        {
+            "package": {"ecosystem": "PyPI", "name": "fastuuid"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+        }
+    ],
+}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_extra_purls_never_resolve_as_built_modules(mock_osv: object, mock_nvd: object) -> None:
+    """A CVE whose affected module is only an extraPurl is DROPPED, not attributed.
+
+    fastuuid rides along from the validated cache but was not produced by this
+    build; the strict drop-not-mis-attribute rule must treat extraPurls as
+    invisible even though the advisory names a package the index carries.
+    """
+    mock_osv.return_value = _FASTUUID_UPSTREAM
+    results = convert_build_index(BuildIndex.from_dict(_LITELLM_RIDE_ALONG_INDEX))
+    assert results == []
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_extra_purls_do_not_extend_candidate_set(mock_osv: object, mock_nvd: object) -> None:
+    """A CVE matching the primary attributes to the primary only, never an extra."""
+    mock_osv.return_value = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "litellm"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            }
+        ]
+    }
+    results = convert_build_index(BuildIndex.from_dict(_LITELLM_RIDE_ALONG_INDEX))
+    assert len(results) == 1
+    names = {a.package.name for a in results[0].affected}
+    assert names == {"litellm"}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_monorepo_companion_in_purls_gets_osv_record(mock_osv: object, mock_nvd: object) -> None:
+    """A companion wheel produced from the same patched source DOES get attributed.
+
+    Monorepo builds list every produced wheel in ``purls``; a CVE affecting a
+    companion subpackage is attributed to that companion's built coordinate.
+    This is the intended (rare) expansion of the release allow-list beyond
+    the primary package.
+    """
+    mock_osv.return_value = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "litellm-extra"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            }
+        ]
+    }
+    data = {
+        **_LITELLM_RIDE_ALONG_INDEX,
+        "purls": [
+            "pkg:pypi/litellm@1.0.0%2Brhlw.1",
+            "pkg:pypi/litellm-extra@1.0.0%2Brhlw.1",
+        ],
+    }
+    results = convert_build_index(BuildIndex.from_dict(data))
+    assert len(results) == 1
+    aff = results[0].affected
+    assert len(aff) == 1
+    assert aff[0].package.name == "litellm-extra"
+    assert aff[0].package.purl == "pkg:pypi/litellm-extra@1.0.0%2Brhlw.1"

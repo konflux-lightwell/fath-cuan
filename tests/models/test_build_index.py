@@ -183,3 +183,61 @@ def test_negative_counts_rejected() -> None:
         BuildIndex.from_dict(
             {**VALID_PYPI, "version": {"upstream": "7.6.12", "full": "7.6.12+rhlw.1", "b": -1}}
         )
+
+
+def test_extra_purls_default_empty() -> None:
+    bi = BuildIndex.from_dict(VALID_PYPI)
+    assert bi.extra_purls == []
+
+
+def test_extra_purls_accepted_when_disjoint() -> None:
+    bi = BuildIndex.from_dict(
+        {
+            **VALID_PYPI,
+            "extraPurls": ["pkg:pypi/fastuuid@1.0.0"],
+        }
+    )
+    assert bi.extra_purls == ["pkg:pypi/fastuuid@1.0.0"]
+
+
+def test_extra_purls_rejected_when_overlapping_purls() -> None:
+    # A module in both sets means the producer is ambivalent about whether it
+    # was produced by this build -- and purls drives OSV attribution.
+    with pytest.raises(ValueError, match="disjoint"):
+        BuildIndex.from_dict(
+            {
+                **VALID_PYPI,
+                "extraPurls": [
+                    "pkg:pypi/coverage@7.6.12%2Brhlw.1",
+                    "pkg:pypi/fastuuid@1.0.0",
+                ],
+            }
+        )
+
+
+def test_extra_purls_rejected_when_encoded_vs_raw_overlap() -> None:
+    # Coverage in purls is "pkg:pypi/coverage@7.6.12%2Brhlw.1"
+    # Unencoded raw "+" in extraPurls should be caught via canonical comparison.
+    with pytest.raises(ValueError, match="disjoint"):
+        BuildIndex.from_dict(
+            {
+                **VALID_PYPI,
+                "extraPurls": [
+                    "pkg:pypi/coverage@7.6.12+rhlw.1",
+                ],
+            }
+        )
+
+
+def test_extra_purls_rejected_when_case_only_overlap() -> None:
+    # Coverage in purls is lowercase "pkg:pypi/coverage@..."
+    # Uppercase variant should be caught via canonical comparison.
+    with pytest.raises(ValueError, match="disjoint"):
+        BuildIndex.from_dict(
+            {
+                **VALID_PYPI,
+                "extraPurls": [
+                    "pkg:PYPI/Coverage@7.6.12%2Brhlw.1",
+                ],
+            }
+        )
