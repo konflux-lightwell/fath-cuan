@@ -279,6 +279,24 @@ def index() -> None:
 )
 @click.option("--purl", default=None, help="Package URL (mutually exclusive with --gav).")
 @click.option("--gav", default=None, help="Maven GAV (mutually exclusive with --purl).")
+@click.option(
+    "--produced-purl",
+    "produced_purls",
+    multiple=True,
+    help=(
+        "Additional PURL produced by this build (repeatable, monorepo companions); "
+        "drives OSV attribution and release scope."
+    ),
+)
+@click.option(
+    "--extra-purl",
+    "extra_purls",
+    multiple=True,
+    help=(
+        "Ride-along PURL not produced by this build (repeatable); "
+        "release-scope only, never drives OSV attribution."
+    ),
+)
 @click.option("--version-upstream", default=None, help="Upstream base version (derived if unset).")
 @click.option(
     "--version-local",
@@ -310,6 +328,8 @@ def index_create(
     ecosystem: str | None,
     purl: str | None,
     gav: str | None,
+    produced_purls: tuple[str, ...],
+    extra_purls: tuple[str, ...],
     version_upstream: str | None,
     version_local: str,
     b_count: int,
@@ -335,6 +355,8 @@ def index_create(
             git_dir=git_dir,
             build_id=build_id,
             require_vuln=require_vuln,
+            produced_purls=list(produced_purls) if produced_purls else None,
+            extra_purls=list(extra_purls) if extra_purls else None,
         )
     except ValueError as e:
         raise click.UsageError(str(e)) from e
