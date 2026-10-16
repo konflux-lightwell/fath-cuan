@@ -353,9 +353,10 @@ def test_produced_purls_dedup_and_primary_equal_dropped() -> None:
         version_local="7.6.12+rhlw.1",
         purl="pkg:pypi/coverage@7.6.12",
         produced_purls=[
-            "pkg:pypi/coverage@7.6.12%2Brhlw.1",  # duplicate of primary
+            "pkg:pypi/coverage@7.6.12+rhlw.1",  # raw '+' vs encoded primary '%2B'
+            "pkg:PYPI/Coverage@7.6.12%2Brhlw.1",  # case-variant duplicate of primary
             "pkg:pypi/coverage-companion@7.6.12%2Brhlw.1",
-            "pkg:pypi/coverage-companion@7.6.12%2Brhlw.1",  # duplicate within list
+            "pkg:pypi/coverage-companion@7.6.12+rhlw.1",  # canonical duplicate within list
         ],
         vuln_resolver=_no_vulns,
     )
@@ -391,6 +392,42 @@ def test_extra_purls_ecosystem_mismatch_rejected() -> None:
             version_local="7.6.12+rhlw.1",
             purl="pkg:pypi/coverage@7.6.12",
             extra_purls=["pkg:maven/org.example/dep@1.0.0"],
+            vuln_resolver=_no_vulns,
+        )
+
+
+def test_extra_purls_dedup() -> None:
+    doc = build_index_document(
+        version_local="7.6.12+rhlw.1",
+        purl="pkg:pypi/coverage@7.6.12",
+        extra_purls=[
+            "pkg:pypi/fastuuid@1.0.0",
+            "pkg:pypi/fastuuid@1.0.0",
+            "pkg:pypi/FASTUUID@1.0.0",
+        ],
+        vuln_resolver=_no_vulns,
+    )
+    assert doc["extraPurls"] == ["pkg:pypi/fastuuid@1.0.0"]
+
+
+def test_produced_purls_versionless_rejected() -> None:
+    expected = "purl must include a version: pkg:pypi/coverage-companion"
+    with pytest.raises(ValueError, match=expected):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage@7.6.12",
+            produced_purls=["pkg:pypi/coverage-companion"],
+            vuln_resolver=_no_vulns,
+        )
+
+
+def test_extra_purls_versionless_rejected() -> None:
+    expected = "purl must include a version: pkg:pypi/fastuuid"
+    with pytest.raises(ValueError, match=expected):
+        build_index_document(
+            version_local="7.6.12+rhlw.1",
+            purl="pkg:pypi/coverage@7.6.12",
+            extra_purls=["pkg:pypi/fastuuid"],
             vuln_resolver=_no_vulns,
         )
 

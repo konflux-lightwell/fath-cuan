@@ -20,7 +20,10 @@ from fath_cuan.ecosystems import (
     pypi_coordinate,
 )
 from fath_cuan.gittrailers import ResolvedVulns, resolve_vulns
-from fath_cuan.models.build_index import BuildIndex
+from fath_cuan.models.build_index import (
+    BuildIndex,
+    _canonical_purl,
+)
 from fath_cuan.models.input import InputDocument
 
 logger = logging.getLogger(__name__)
@@ -67,8 +70,10 @@ def _split_purl(purl: str) -> tuple[str, str, str | None]:
 
 
 def _validate_purl_ecosystem(purl: str, expected_ecosystem: str, label: str) -> None:
-    """Validate that a PURL's ecosystem matches the build ecosystem."""
-    eco, _, _ = _split_purl(purl)
+    """Validate that a PURL's ecosystem matches the build ecosystem and includes a version."""
+    eco, _, version = _split_purl(purl)
+    if not version:
+        raise ValueError(f"purl must include a version: {purl}")
     if eco != expected_ecosystem:
         raise ValueError(
             f"{label} '{purl}' ecosystem '{eco}' does not match "
@@ -205,17 +210,22 @@ def build_index_document(
         )
 
     produced: list[str] = []
-    seen: set[str] = {coord.purl}
+    seen: set[str] = {_canonical_purl(coord.purl)}
     for p in produced_purls or []:
         _validate_purl_ecosystem(p, coord.ecosystem, "produced PURL")
-        if p not in seen:
-            seen.add(p)
+        canon = _canonical_purl(p)
+        if canon not in seen:
+            seen.add(canon)
             produced.append(p)
 
     extras: list[str] = []
+    seen_extras: set[str] = set()
     for p in extra_purls or []:
         _validate_purl_ecosystem(p, coord.ecosystem, "extra PURL")
-        extras.append(p)
+        canon = _canonical_purl(p)
+        if canon not in seen_extras:
+            seen_extras.add(canon)
+            extras.append(p)
 
     payload: dict[str, Any] = {
         "buildId": build_id,

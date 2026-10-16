@@ -11,6 +11,7 @@ need not regex-split version strings.
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -30,6 +31,11 @@ class VersionInfo(BaseModel):
     full: str | None = None
     b: int = Field(default=0, ge=0)
     n: int = Field(default=0, ge=0)
+
+
+def _canonical_purl(purl: str) -> str:
+    """Normalize a PURL for equality comparison (percent-decode and casefold)."""
+    return urllib.parse.unquote(purl).casefold()
 
 
 class BuildIndex(BaseModel):
@@ -160,7 +166,8 @@ class BuildIndex(BaseModel):
         Fail loudly at the schema boundary rather than let the ambiguity
         through.
         """
-        overlap = sorted(set(self.extra_purls) & set(self.purls))
+        canonical_purls = {_canonical_purl(p) for p in self.purls}
+        overlap = sorted({p for p in self.extra_purls if _canonical_purl(p) in canonical_purls})
         if overlap:
             raise ValueError(
                 f"extraPurls must be disjoint from purls; these appear in both: {overlap}"

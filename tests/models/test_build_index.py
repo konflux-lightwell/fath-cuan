@@ -213,3 +213,31 @@ def test_extra_purls_rejected_when_overlapping_purls() -> None:
                 ],
             }
         )
+
+
+def test_extra_purls_rejected_when_encoded_vs_raw_overlap() -> None:
+    # Coverage in purls is "pkg:pypi/coverage@7.6.12%2Brhlw.1"
+    # Unencoded raw "+" in extraPurls should be caught via canonical comparison.
+    with pytest.raises(ValueError, match="disjoint"):
+        BuildIndex.from_dict(
+            {
+                **VALID_PYPI,
+                "extraPurls": [
+                    "pkg:pypi/coverage@7.6.12+rhlw.1",
+                ],
+            }
+        )
+
+
+def test_extra_purls_rejected_when_case_only_overlap() -> None:
+    # Coverage in purls is lowercase "pkg:pypi/coverage@..."
+    # Uppercase variant should be caught via canonical comparison.
+    with pytest.raises(ValueError, match="disjoint"):
+        BuildIndex.from_dict(
+            {
+                **VALID_PYPI,
+                "extraPurls": [
+                    "pkg:PYPI/Coverage@7.6.12%2Brhlw.1",
+                ],
+            }
+        )
