@@ -16,7 +16,8 @@ spec:
   - name: SOURCE_ARTIFACT
     description: >-
       Trusted Artifact URI of the source tree including .git history. The tagged HEAD supplies the Lightwell-Fix
-      trailers used by index generation.
+      trailers used by index generation for remediated builds (Backport/Novel); Validated builds
+      publish without vulnerability evidence and do not consult git history.
     type: string
   - name: MANIFEST_ARTIFACT
     description: >-

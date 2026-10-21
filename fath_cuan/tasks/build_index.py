@@ -15,7 +15,7 @@ import click
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-from fath_cuan.gittrailers import resolve_vulns
+from fath_cuan.gittrailers import ResolvedVulns, resolve_vulns
 from fath_cuan.index_builder import build_index_document
 from fath_cuan.tasks.registry import attach_index, pinned_reference, read_json
 
@@ -116,6 +116,18 @@ def _recent_history(source: str) -> str:
     )
 
 
+def _clean_build_resolver(
+    explicit: list[str], env_value: str | None, git_dir: str | None
+) -> ResolvedVulns:
+    """Validated builds carry no vulnerability IDs by definition.
+
+    Explicit evidence, the VULN_IDS environment, and git history are all
+    ignored: a validated index with a stray vulnerability ID would be
+    rejected by the validated release stream, which requires none.
+    """
+    return ResolvedVulns([], "clean-build")
+
+
 def run(
     *,
     package: str,
@@ -143,6 +155,8 @@ def run(
         computed_version: Full version emitted by the source preparation task.
         build_type: Backport, Novel, or Validated provenance policy.
         source_dir: Restored source tree containing its .git history.
+            Consulted for Lightwell-Fix trailers by remediated builds only;
+            Validated builds publish without vulnerability evidence.
         image_ref: Digest-pinned wheels image receiving the index referrer.
         workdir: Writable directory containing retained per-invocation scratch trees.
         results_dir: Tekton result mount receiving attachment reference and digest.
@@ -164,8 +178,21 @@ def run(
     image_ref = pinned_reference(image_ref)
     backports, novel = version_counts(version, computed_version, build_type)
     source = source_dir.resolve()
-    if not (source / ".git").is_dir():
-        raise ValueError("Source artifact has no .git directory for Lightwell-Fix trailers")
+    if build_type == "Validated":
+        # Validated content is a clean upstream rebuild: the artifact is
+        # published without vulnerability IDs, so git history is neither
+        # required nor consulted and stray VULN_IDS evidence is ignored.
+        git_dir = None
+        vuln_resolver = _clean_build_resolver
+    else:
+        if not (source / ".git").is_dir():
+            raise ValueError("Source artifact has no .git directory for Lightwell-Fix trailers")
+        git_dir = str(source)
+        vuln_resolver = partial(
+            resolve_vulns,
+            commit_message_reader=_commit_message,
+            recent_log_reader=_recent_history,
+        )
     produced, cached = manifest_purls(manifest_path, package)
 
     document = build_index_document(
@@ -175,15 +202,11 @@ def run(
         version_local=computed_version,
         b=backports,
         n=novel,
-        git_dir=str(source),
+        git_dir=git_dir,
         require_vuln=build_type != "Validated",
         produced_purls=produced,
         extra_purls=cached,
-        vuln_resolver=partial(
-            resolve_vulns,
-            commit_message_reader=_commit_message,
-            recent_log_reader=_recent_history,
-        ),
+        vuln_resolver=vuln_resolver,
     )
 
     workdir.mkdir(parents=True, exist_ok=True)

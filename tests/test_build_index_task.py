@@ -277,6 +277,24 @@ def test_oras_failure_retries_and_removes_credentials(tmp_path, monkeypatch):
     assert all(not Path(call[call.index("--registry-config") + 1]).exists() for call in calls)
 
 
+def test_validated_publishes_without_git_history(tmp_path, fake_oras, monkeypatch):
+    """Validated content creates its artifact without vulnerability evidence.
+
+    A source tree without .git and a stray VULN_IDS value must not block a
+    Validated build or leak an ID into its index: the validated release
+    stream requires zero vulnerabilities of any kind.
+    """
+    plain = tmp_path / "plain-source"
+    plain.mkdir()
+    monkeypatch.setenv("VULN_IDS", "CVE-2025-99999")
+    arguments = cli_arguments(tmp_path, plain, build_type="Validated", computed="1.0")
+    result = CliRunner().invoke(build_index.main, arguments)
+    assert result.exit_code == 0, result.output
+    document = json.loads(json.loads(fake_oras.read_text())["payload"])
+    assert document["vulns"] == []
+    assert (tmp_path / "results/BUILD_INDEX_DIGEST").exists()
+
+
 @pytest.mark.parametrize("manifest_uri", ["", "registry.test/manifest@sha256:abc"])
 def test_tekton_restores_artifacts_then_dispatches_one_cli(
     tmp_path,
