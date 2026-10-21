@@ -248,7 +248,7 @@ The legacy PNC build metadata file (`gav-index.json`) has this structure:
 | `gavIndexTag` | The `idx-<buildId>` OCI tag holding this gav-index |
 | `gavs` | All Maven GAV coordinates produced by the build |
 | `primaryGav` | The primary Maven coordinate (used for the OSV `affected` package) |
-| `upstreamVersion` | *(optional)* Explicit upstream base version; otherwise derived by stripping the `.rhlw-…` qualifier |
+| `upstreamVersion` | *(optional)* Explicit upstream base version; otherwise derived by stripping the `rhlw` qualifier (`.rhlw-…` or `-rhlw-…`) |
 
 ## OSV Output Format
 
