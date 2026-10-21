@@ -301,7 +301,10 @@ def index() -> None:
 @click.option(
     "--version-local",
     required=True,
-    help="Full remediated version — Maven e.g. '1.0.0.rhlw-00001' or '1.0.0.Final-rhlw-00001', PyPI e.g. '1.0.0+rhlw.1'.",
+    help=(
+        "Full remediated version — Maven e.g. '1.0.0.rhlw-00001' or "
+        "'1.0.0.Final-rhlw-00001', PyPI e.g. '1.0.0+rhlw.1'."
+    ),
 )
 @click.option("--b", "b_count", type=int, default=0, help="Backport count.")
 @click.option("--n", "n_count", type=int, default=0, help="Novel count.")
