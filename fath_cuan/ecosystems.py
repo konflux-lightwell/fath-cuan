@@ -81,9 +81,26 @@ def maven_base_version(version: str) -> str:
     including the optional novel marker (``-n-00001``), so the full version
     stays OSGi-compatible by construction. An optional intermediate tag
     (e.g. ``rhlw-dp-00002``) is also accepted.
+
+    Counter width is not fixed either: any number of digits is accepted, since
+    zero-padding is a producer convention that must not become a parser
+    requirement.
+
+    Raises:
+        ValueError: When the version carries stacked rhlw suffixes. Stripping
+            one layer would yield a "base" that is itself a Lightwell build,
+            which would silently defeat downstream base-vs-full guards.
     """
     m = _RHLW_SUFFIX_RE.match(version)
-    return m.group("base") if m else version
+    if not m:
+        return version
+    base = m.group("base")
+    if _RHLW_SUFFIX_RE.match(base):
+        raise ValueError(
+            f"version {version!r} carries stacked rhlw suffixes; the upstream "
+            f"base would itself be a Lightwell build ({base!r})"
+        )
+    return base
 
 
 def maven_coordinate(primary_gav: str, upstream_version: str | None = None) -> Coordinate:

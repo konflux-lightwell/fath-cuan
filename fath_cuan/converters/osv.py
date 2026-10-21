@@ -504,7 +504,7 @@ def _maven_built_coords(gavs: list[str], upstream_version: str | None = None) ->
     ``upstream_version`` is threaded through so every built module derives the
     same ``base_version`` as the primary coordinate (and thus the record id /
     ``backport_base_version``). Without it a module gav like
-    ``1.2.3.Final.rhlw-00001`` would yield ``versions=['1.2.3.Final']`` while
+    ``1.0.0.Final-rhlw-00001`` would yield ``versions=['1.0.0.Final']`` while
     the id used ``upstreamVersion=1.2.3`` — an internally inconsistent document.
     """
     coords: list[Coordinate] = []
@@ -866,6 +866,17 @@ def convert(
     source priority and embargo semantics.
     """
     coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
+    # Mirror the BuildIndex remediation guard: a remediation build (one that
+    # carries vulns) must resolve an upstream base distinct from the full
+    # version, otherwise the OSV ``fixed`` event would equal the affected
+    # version and a scanner would read the advisory as "no fix exists".
+    if doc.vulns and coord.base_version == coord.version:
+        raise ValueError(
+            f"remediation build with {len(doc.vulns)} vuln(s) did not resolve an "
+            f"upstream base distinct from the full version "
+            f"('{coord.version}'); pass upstreamVersion or use a recognized "
+            f"rhlw suffix"
+        )
     built_coords = _maven_built_coords(doc.gavs, doc.upstream_version)
     return _build_records(
         coord,

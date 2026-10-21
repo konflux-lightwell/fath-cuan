@@ -47,6 +47,34 @@ def test_maven_base_version_strips_novel_marker() -> None:
     assert maven_base_version("8.0.1.Final-rhlw-00000-n-00001") == "8.0.1.Final"
 
 
+def test_maven_base_version_strips_tag_and_novel_marker() -> None:
+    assert maven_base_version("1.2.3.rhlw-dp-00002-n-00004") == "1.2.3"
+
+
+def test_maven_base_version_rejects_stacked_suffixes() -> None:
+    # Stripping one layer would yield a "base" that is itself a Lightwell
+    # build, silently defeating downstream base-vs-full guards.
+    with pytest.raises(ValueError, match="stacked rhlw suffixes"):
+        maven_base_version("1.0.0.rhlw-00002.rhlw-00001")
+    with pytest.raises(ValueError, match="stacked rhlw suffixes"):
+        maven_base_version("1.0.0.Final-rhlw-00002-rhlw-00001")
+
+
+def test_maven_base_version_near_misses_unchanged() -> None:
+    # 'rhlw' inside a longer token, or not preceded by a separator, is not
+    # a Lightwell suffix.
+    assert maven_base_version("1.0.0.rhlwx-00001") == "1.0.0.rhlwx-00001"
+    assert maven_base_version("1.0.0.orrhlw-00001") == "1.0.0.orrhlw-00001"
+    assert maven_base_version("1.0.0.rhlw_00001") == "1.0.0.rhlw_00001"
+    assert maven_base_version("1.0.0.RHLW-00001") == "1.0.0.RHLW-00001"
+
+
+def test_maven_base_version_unpadded_counters() -> None:
+    # Zero-padding is a producer convention, not a parser requirement.
+    assert maven_base_version("1.2.3.rhlw-7") == "1.2.3"
+    assert maven_base_version("1.2.3.rhlw-00003-n-7") == "1.2.3"
+
+
 def test_maven_base_version_unchanged() -> None:
     assert maven_base_version("5.3.18") == "5.3.18"
 
