@@ -23,11 +23,14 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "tox>=4.0",
+    "PyYAML>=6.0",
+    "jsonschema>=4.0",
     "oras>=0.2",
 ]
 
 [project.scripts]
 fath-cuan = "fath_cuan.cli:main"
+fath-cuan-attach-build-index = "fath_cuan.tasks.build_index:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

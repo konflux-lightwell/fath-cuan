@@ -317,3 +317,10 @@ tox
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
+
+## Tekton build-index task
+
+The [attach-build-index task](tekton/task/README.md) generates a build index from
+source history and an optional wheel manifest, then attaches it to the wheels
+image. It runs `fath-cuan-attach-build-index`, with trusted-artifact restoration
+handled by separate Tekton steps.

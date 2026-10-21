@@ -43,6 +43,7 @@ RUN echo "${RH_IT_CERT}" | base64 -d > /etc/pki/ca-trust/source/anchors/Current-
     && microdnf install -y \
         python3.12-pip \
         jq \
+        git \
     # for CVEs in base image
     && microdnf update -y \
     && microdnf clean all \
@@ -52,6 +53,11 @@ RUN echo "${RH_IT_CERT}" | base64 -d > /etc/pki/ca-trust/source/anchors/Current-
 # Set the internal certificates (OSIDB enrichment talks to internal Red Hat endpoints)
 ENV REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+
+# Validate the task entrypoint and external tools in the runtime image.
+RUN fath-cuan-attach-build-index --help \
+    && git --version \
+    && oras version
 
 # Run the CLI
 ENTRYPOINT ["fath-cuan"]

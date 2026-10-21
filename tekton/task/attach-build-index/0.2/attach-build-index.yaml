@@ -1,0 +1,161 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  annotations:
+    tekton.dev/pipelines.minVersion: 1.0.0
+    tekton.dev/tags: python, osv, build-index, lightwell, konflux
+  labels:
+    app.kubernetes.io/version: '0.2'
+    build.appstudio.redhat.com/build_type: attach-build-index
+  name: attach-build-index
+spec:
+  description: >-
+    Restore source history and an optional wheel manifest with build-trusted-artifacts, then run fath-cuan-attach-build-index
+    to validate and publish the OCI build index and emit its content digest.
+  params:
+  - name: SOURCE_ARTIFACT
+    description: >-
+      Trusted Artifact URI of the source tree including .git history. The tagged HEAD supplies the Lightwell-Fix
+      trailers used by index generation.
+    type: string
+  - name: MANIFEST_ARTIFACT
+    description: >-
+      Optional Trusted Artifact URI containing build-manifest.json from python-fromager-build-wheels.
+      Produced companions and cached dependencies are recorded as disjoint PURL lists.
+    type: string
+    default: ''
+  - name: IMAGE_REF
+    description: >-
+      Digest-pinned reference (repo@sha256:...) of the wheels component image the build-index referrer
+      is attached to. Digest-pinning guarantees the referrer lands on exactly the image that was built.
+    type: string
+  - name: PACKAGE
+    description: >-
+      Canonical Python package name (PEP 503 normalized, hyphens only), used to construct the pkg:pypi
+      PURL.
+    type: string
+  - name: VERSION
+    description: >-
+      Upstream package version; equals COMPUTED_VERSION for Validated builds.
+    type: string
+  - name: COMPUTED_VERSION
+    description: >-
+      Full remediated (PEP 440 local) version, e.g. 3.0.1+rhlw.1. Recorded as version.full and used as
+      the PURL version, so primaryPurl matches version.full (enforced by the BuildIndex schema).
+    type: string
+  - name: BUILD_TYPE
+    description: >-
+      Backport, Novel, or Validated. Remediated builds require authoritative vulnerability evidence.
+    type: string
+  - name: caTrustConfigMapName
+    description: >-
+      The name of the ConfigMap to read CA bundle data from.
+    type: string
+    default: trusted-ca
+  - name: caTrustConfigMapKey
+    description: >-
+      The name of the key in the ConfigMap that contains the CA bundle data.
+    type: string
+    default: ca-bundle.crt
+  - name: FATH_CUAN_IMAGE
+    type: string
+    description: >-
+      Digest-pinned fath-cuan image containing fath-cuan-attach-build-index, Git and ORAS. Build this
+      repository Dockerfile before updating the pipeline.
+  results:
+  - name: BUILD_INDEX_ATTACHED_REF
+    description: >-
+      The component image reference the build-index referrer was attached to (repo@sha256:...). Empty
+      if nothing was attached.
+  - name: BUILD_INDEX_DIGEST
+    description: >-
+      The sha256 content digest (sha256:...) of the attached build-index.json. Recorded as a PipelineRun
+      result so Tekton Chains attests it, letting Enterprise Contract verify at release time that the
+      publish manifest a release consumed is exactly the one this build produced (LWLP-3276).
+  stepTemplate:
+    volumeMounts:
+    - mountPath: /var/workdir
+      name: workdir
+  steps:
+  - name: use-source-artifact
+    image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:9bd32f6bafb517b309e11a2d89365052b4ab3f1c9c23c4ffd45aff6f03960476
+    computeResources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 512Mi
+    volumeMounts:
+    - name: trusted-ca
+      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+      subPath: ca-bundle.crt
+      readOnly: true
+    args:
+    - use
+    - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+  - name: use-manifest-artifact
+    image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:9bd32f6bafb517b309e11a2d89365052b4ab3f1c9c23c4ffd45aff6f03960476
+    computeResources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 512Mi
+    volumeMounts:
+    - name: trusted-ca
+      mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+      subPath: ca-bundle.crt
+      readOnly: true
+    args:
+    - use
+    - $(params.MANIFEST_ARTIFACT)=/var/workdir/manifest
+    when:
+    - input: $(params.MANIFEST_ARTIFACT)
+      operator: notin
+      values:
+      - ''
+  - name: create-and-attach
+    computeResources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 512Mi
+    image: $(params.FATH_CUAN_IMAGE)
+    workingDir: /var/workdir
+    command:
+    - fath-cuan-attach-build-index
+    args:
+    - --package=$(params.PACKAGE)
+    - --version=$(params.VERSION)
+    - --computed-version=$(params.COMPUTED_VERSION)
+    - --build-type=$(params.BUILD_TYPE)
+    - --source-dir=/var/workdir/source
+    - --image-ref=$(params.IMAGE_REF)
+    - --workdir=/var/workdir
+    - --results-dir=/tekton/results
+    - --auth-file=$(workspaces.registry-auth.path)/.dockerconfigjson
+    - --ca-bundle=/mnt/trusted-ca/ca-bundle.crt
+    - --manifest-artifact=$(params.MANIFEST_ARTIFACT)
+    - --manifest-path=/var/workdir/manifest/build-manifest.json
+    volumeMounts:
+    - name: trusted-ca
+      mountPath: /mnt/trusted-ca
+      readOnly: true
+  volumes:
+  - configMap:
+      items:
+      - key: $(params.caTrustConfigMapKey)
+        path: ca-bundle.crt
+      name: $(params.caTrustConfigMapName)
+      optional: true
+    name: trusted-ca
+  - emptyDir: {}
+    name: workdir
+  workspaces:
+  - name: registry-auth
+    description: >-
+      Bind a kubernetes.io/dockerconfigjson Secret containing .dockerconfigjson; also attach it to the
+      TaskRun service account for trusted artifacts.
+    mountPath: /mnt/registry-auth
+    readOnly: true
