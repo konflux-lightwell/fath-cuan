@@ -60,6 +60,24 @@ def test_maven_base_version_rejects_stacked_suffixes() -> None:
         maven_base_version("1.0.0.Final-rhlw-00002-rhlw-00001")
 
 
+def test_maven_base_version_rejects_redhat_stacking() -> None:
+    # An rhlw suffix stacked on a Red Hat Enterprise rebuild is a hypothetical
+    # future form outside the enumerated grammar. It must fail loudly rather
+    # than silently treating the rebuild as the upstream base.
+    with pytest.raises(ValueError, match="Red Hat Enterprise rebuild"):
+        maven_base_version("1.0.0.redhat-00001-rhlw-00001")
+    with pytest.raises(ValueError, match="Red Hat Enterprise rebuild"):
+        maven_base_version("8.0.1.Final-redhat-00001-rhlw-00001")
+    with pytest.raises(ValueError, match="Red Hat Enterprise rebuild"):
+        maven_base_version("1.0.0.redhat-1-rhlw-00001")
+
+
+def test_maven_base_version_redhat_qualifier_alone_unchanged() -> None:
+    # A plain Enterprise rebuild (no rhlw suffix) is upstream data we do not
+    # own; it must pass through untouched, not raise.
+    assert maven_base_version("4.4.8.redhat-00001") == "4.4.8.redhat-00001"
+
+
 def test_maven_base_version_near_misses_unchanged() -> None:
     # 'rhlw' inside a longer token, or not preceded by a separator, is not
     # a Lightwell suffix.

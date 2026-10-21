@@ -68,6 +68,11 @@ def parse_gav(gav: str) -> tuple[str, str, str]:
 
 
 _RHLW_SUFFIX_RE = re.compile(r"^(?P<base>.+?)[.-]rhlw-(?:\w+-)?\d+(?:-n-\d+)?$")
+# A Red Hat Enterprise Maven rebuild qualifier (e.g. "4.4.8.redhat-00001").
+# Stacking one under an rhlw suffix ("1.0.0.redhat-00001-rhlw-00001") is
+# discussed as a hypothetical future form in the security-identity ADR but is
+# not part of the grammar this parser enumerates; see the raise below.
+_REDHAT_QUALIFIER_RE = re.compile(r"[-.]redhat-\d+$")
 
 
 def maven_base_version(version: str) -> str:
@@ -90,6 +95,12 @@ def maven_base_version(version: str) -> str:
         ValueError: When the version carries stacked rhlw suffixes. Stripping
             one layer would yield a "base" that is itself a Lightwell build,
             which would silently defeat downstream base-vs-full guards.
+        ValueError: When the resolved base carries a Red Hat Enterprise Maven
+            rebuild qualifier (``redhat-NNNNN``). That stacking is a
+            hypothetical future form outside this parser's enumerated grammar;
+            resolving it to the rebuild version would silently mis-base
+            advisories, so it fails loudly pending a deliberate grammar
+            extension.
     """
     m = _RHLW_SUFFIX_RE.match(version)
     if not m:
@@ -99,6 +110,13 @@ def maven_base_version(version: str) -> str:
         raise ValueError(
             f"version {version!r} carries stacked rhlw suffixes; the upstream "
             f"base would itself be a Lightwell build ({base!r})"
+        )
+    if _REDHAT_QUALIFIER_RE.search(base):
+        raise ValueError(
+            f"version {version!r} stacks an rhlw suffix on a Red Hat "
+            f"Enterprise rebuild ({base!r}); this form is not part of the "
+            f"enumerated grammar — extend the parser deliberately if it "
+            f"becomes real"
         )
     return base
 
