@@ -67,15 +67,58 @@ def parse_gav(gav: str) -> tuple[str, str, str]:
     return parts[0], parts[1], parts[2]
 
 
+_RHLW_SUFFIX_RE = re.compile(r"^(?P<base>.+?)[.-]rhlw-(?:\w+-)?\d+(?:-n-\d+)?$")
+# A Red Hat Enterprise Maven rebuild qualifier (e.g. "4.4.8.redhat-00001").
+# Stacking one under an rhlw suffix ("1.0.0.redhat-00001-rhlw-00001") is
+# discussed as a hypothetical future form in the security-identity ADR but is
+# not part of the grammar this parser enumerates; see the raise below.
+_REDHAT_QUALIFIER_RE = re.compile(r"[-.]redhat-\d+$")
+
+
 def maven_base_version(version: str) -> str:
-    """Strip the rhlw qualifier from a Maven version to get the upstream base."""
-    m = re.match(r"^(.+?)\.rhlw-\w+-\d+$", version)
-    if m:
-        return m.group(1)
-    m = re.match(r"^(.+?)\.rhlw-\d+$", version)
-    if m:
-        return m.group(1)
-    return version
+    """Strip the rhlw qualifier from a Maven version to get the upstream base.
+
+    The separator before ``rhlw`` is positional, not fixed: an OSGi-qualified
+    upstream version (``major.minor.micro.qualifier``, e.g. ``1.0.0.Final``)
+    already occupies the fourth dot segment, so the suffix attaches with a
+    hyphen (``1.0.0.Final-rhlw-00002``); unqualified versions use a dot
+    (``1.0.0.rhlw-00001``). Once the suffix starts, dashes are used throughout,
+    including the optional novel marker (``-n-00001``), so the full version
+    stays OSGi-compatible by construction. An optional intermediate tag
+    (e.g. ``rhlw-dp-00002``) is also accepted.
+
+    Counter width is not fixed either: any number of digits is accepted, since
+    zero-padding is a producer convention that must not become a parser
+    requirement.
+
+    Raises:
+        ValueError: When the version carries stacked rhlw suffixes. Stripping
+            one layer would yield a "base" that is itself a Lightwell build,
+            which would silently defeat downstream base-vs-full guards.
+        ValueError: When the resolved base carries a Red Hat Enterprise Maven
+            rebuild qualifier (``redhat-NNNNN``). That stacking is a
+            hypothetical future form outside this parser's enumerated grammar;
+            resolving it to the rebuild version would silently mis-base
+            advisories, so it fails loudly pending a deliberate grammar
+            extension.
+    """
+    m = _RHLW_SUFFIX_RE.match(version)
+    if not m:
+        return version
+    base = m.group("base")
+    if _RHLW_SUFFIX_RE.match(base):
+        raise ValueError(
+            f"version {version!r} carries stacked rhlw suffixes; the upstream "
+            f"base would itself be a Lightwell build ({base!r})"
+        )
+    if _REDHAT_QUALIFIER_RE.search(base):
+        raise ValueError(
+            f"version {version!r} stacks an rhlw suffix on a Red Hat "
+            f"Enterprise rebuild ({base!r}); this form is not part of the "
+            f"enumerated grammar — extend the parser deliberately if it "
+            f"becomes real"
+        )
+    return base
 
 
 def maven_coordinate(primary_gav: str, upstream_version: str | None = None) -> Coordinate:

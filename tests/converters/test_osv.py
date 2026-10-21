@@ -38,6 +38,36 @@ def test_returns_one_record_per_cve(mock_osv: object, mock_nvd: object) -> None:
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_rejects_remediation_without_distinct_upstream(mock_osv: object, mock_nvd: object) -> None:
+    # A remediation build whose version does not resolve an upstream base
+    # (unrecognized suffix, no upstreamVersion) must fail loudly: emitting an
+    # advisory whose fixed version equals the affected version would read as
+    # "no fix exists" to scanners.
+    data = {
+        **SAMPLE_INPUT_DATA,
+        "primaryGav": "org.example:artifact:1.0.0.rhlw_00001",
+        "gavs": ["org.example:artifact:1.0.0.rhlw_00001"],
+    }
+    doc = InputDocument.from_dict(data)
+    with pytest.raises(ValueError, match="did not resolve an upstream base"):
+        convert(doc)
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_accepts_osgi_qualified_hyphen_suffix(mock_osv: object, mock_nvd: object) -> None:
+    data = {
+        **SAMPLE_INPUT_DATA,
+        "primaryGav": "org.example:artifact:1.0.0.Final-rhlw-00002",
+        "gavs": ["org.example:artifact:1.0.0.Final-rhlw-00002"],
+    }
+    doc = InputDocument.from_dict(data)
+    results = convert(doc)
+    assert results[0].affected[0].versions == ["1.0.0.Final"]
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_deduplicates_cves(mock_osv: object, mock_nvd: object) -> None:
     doc = InputDocument.from_dict(SAMPLE_DUPLICATE_CVE_DATA)
     results = convert(doc)

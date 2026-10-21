@@ -34,6 +34,65 @@ def test_maven_base_version_strips_rhlw_dp() -> None:
     assert maven_base_version("4.0.4.rhlw-dp-00002") == "4.0.4"
 
 
+def test_maven_base_version_strips_rhlw_osgi_qualified() -> None:
+    # An OSGi-qualified upstream (major.minor.micro.qualifier) already occupies
+    # the fourth dot segment, so the suffix attaches with a hyphen.
+    assert maven_base_version("1.0.0.Final-rhlw-00002") == "1.0.0.Final"
+    assert maven_base_version("3.0.15.RELEASE-rhlw-00003") == "3.0.15.RELEASE"
+    assert maven_base_version("2.3.0.0-rhlw-00005") == "2.3.0.0"
+
+
+def test_maven_base_version_strips_novel_marker() -> None:
+    assert maven_base_version("1.2.3.rhlw-00003-n-00001") == "1.2.3"
+    assert maven_base_version("8.0.1.Final-rhlw-00000-n-00001") == "8.0.1.Final"
+
+
+def test_maven_base_version_strips_tag_and_novel_marker() -> None:
+    assert maven_base_version("1.2.3.rhlw-dp-00002-n-00004") == "1.2.3"
+
+
+def test_maven_base_version_rejects_stacked_suffixes() -> None:
+    # Stripping one layer would yield a "base" that is itself a Lightwell
+    # build, silently defeating downstream base-vs-full guards.
+    with pytest.raises(ValueError, match="stacked rhlw suffixes"):
+        maven_base_version("1.0.0.rhlw-00002.rhlw-00001")
+    with pytest.raises(ValueError, match="stacked rhlw suffixes"):
+        maven_base_version("1.0.0.Final-rhlw-00002-rhlw-00001")
+
+
+def test_maven_base_version_rejects_redhat_stacking() -> None:
+    # An rhlw suffix stacked on a Red Hat Enterprise rebuild is a hypothetical
+    # future form outside the enumerated grammar. It must fail loudly rather
+    # than silently treating the rebuild as the upstream base.
+    with pytest.raises(ValueError, match="Red Hat Enterprise rebuild"):
+        maven_base_version("1.0.0.redhat-00001-rhlw-00001")
+    with pytest.raises(ValueError, match="Red Hat Enterprise rebuild"):
+        maven_base_version("8.0.1.Final-redhat-00001-rhlw-00001")
+    with pytest.raises(ValueError, match="Red Hat Enterprise rebuild"):
+        maven_base_version("1.0.0.redhat-1-rhlw-00001")
+
+
+def test_maven_base_version_redhat_qualifier_alone_unchanged() -> None:
+    # A plain Enterprise rebuild (no rhlw suffix) is upstream data we do not
+    # own; it must pass through untouched, not raise.
+    assert maven_base_version("4.4.8.redhat-00001") == "4.4.8.redhat-00001"
+
+
+def test_maven_base_version_near_misses_unchanged() -> None:
+    # 'rhlw' inside a longer token, or not preceded by a separator, is not
+    # a Lightwell suffix.
+    assert maven_base_version("1.0.0.rhlwx-00001") == "1.0.0.rhlwx-00001"
+    assert maven_base_version("1.0.0.orrhlw-00001") == "1.0.0.orrhlw-00001"
+    assert maven_base_version("1.0.0.rhlw_00001") == "1.0.0.rhlw_00001"
+    assert maven_base_version("1.0.0.RHLW-00001") == "1.0.0.RHLW-00001"
+
+
+def test_maven_base_version_unpadded_counters() -> None:
+    # Zero-padding is a producer convention, not a parser requirement.
+    assert maven_base_version("1.2.3.rhlw-7") == "1.2.3"
+    assert maven_base_version("1.2.3.rhlw-00003-n-7") == "1.2.3"
+
+
 def test_maven_base_version_unchanged() -> None:
     assert maven_base_version("5.3.18") == "5.3.18"
 
