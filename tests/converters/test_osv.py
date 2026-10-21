@@ -38,9 +38,7 @@ def test_returns_one_record_per_cve(mock_osv: object, mock_nvd: object) -> None:
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_rejects_remediation_without_distinct_upstream(
-    mock_osv: object, mock_nvd: object
-) -> None:
+def test_rejects_remediation_without_distinct_upstream(mock_osv: object, mock_nvd: object) -> None:
     # A remediation build whose version does not resolve an upstream base
     # (unrecognized suffix, no upstreamVersion) must fail loudly: emitting an
     # advisory whose fixed version equals the affected version would read as
@@ -57,9 +55,7 @@ def test_rejects_remediation_without_distinct_upstream(
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_accepts_osgi_qualified_hyphen_suffix(
-    mock_osv: object, mock_nvd: object
-) -> None:
+def test_accepts_osgi_qualified_hyphen_suffix(mock_osv: object, mock_nvd: object) -> None:
     data = {
         **SAMPLE_INPUT_DATA,
         "primaryGav": "org.example:artifact:1.0.0.Final-rhlw-00002",
