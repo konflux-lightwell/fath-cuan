@@ -34,6 +34,19 @@ def test_maven_base_version_strips_rhlw_dp() -> None:
     assert maven_base_version("4.0.4.rhlw-dp-00002") == "4.0.4"
 
 
+def test_maven_base_version_strips_rhlw_osgi_qualified() -> None:
+    # An OSGi-qualified upstream (major.minor.micro.qualifier) already occupies
+    # the fourth dot segment, so the suffix attaches with a hyphen.
+    assert maven_base_version("1.0.0.Final-rhlw-00002") == "1.0.0.Final"
+    assert maven_base_version("3.0.15.RELEASE-rhlw-00003") == "3.0.15.RELEASE"
+    assert maven_base_version("2.3.0.0-rhlw-00005") == "2.3.0.0"
+
+
+def test_maven_base_version_strips_novel_marker() -> None:
+    assert maven_base_version("1.2.3.rhlw-00003-n-00001") == "1.2.3"
+    assert maven_base_version("8.0.1.Final-rhlw-00000-n-00001") == "8.0.1.Final"
+
+
 def test_maven_base_version_unchanged() -> None:
     assert maven_base_version("5.3.18") == "5.3.18"
 

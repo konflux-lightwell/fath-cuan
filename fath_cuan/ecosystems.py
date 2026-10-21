@@ -67,15 +67,23 @@ def parse_gav(gav: str) -> tuple[str, str, str]:
     return parts[0], parts[1], parts[2]
 
 
+_RHLW_SUFFIX_RE = re.compile(r"^(?P<base>.+?)[.-]rhlw-(?:\w+-)?\d+(?:-n-\d+)?$")
+
+
 def maven_base_version(version: str) -> str:
-    """Strip the rhlw qualifier from a Maven version to get the upstream base."""
-    m = re.match(r"^(.+?)\.rhlw-\w+-\d+$", version)
-    if m:
-        return m.group(1)
-    m = re.match(r"^(.+?)\.rhlw-\d+$", version)
-    if m:
-        return m.group(1)
-    return version
+    """Strip the rhlw qualifier from a Maven version to get the upstream base.
+
+    The separator before ``rhlw`` is positional, not fixed: an OSGi-qualified
+    upstream version (``major.minor.micro.qualifier``, e.g. ``1.0.0.Final``)
+    already occupies the fourth dot segment, so the suffix attaches with a
+    hyphen (``1.0.0.Final-rhlw-00002``); unqualified versions use a dot
+    (``1.0.0.rhlw-00001``). Once the suffix starts, dashes are used throughout,
+    including the optional novel marker (``-n-00001``), so the full version
+    stays OSGi-compatible by construction. An optional intermediate tag
+    (e.g. ``rhlw-dp-00002``) is also accepted.
+    """
+    m = _RHLW_SUFFIX_RE.match(version)
+    return m.group("base") if m else version
 
 
 def maven_coordinate(primary_gav: str, upstream_version: str | None = None) -> Coordinate:
