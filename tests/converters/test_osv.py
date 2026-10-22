@@ -116,6 +116,32 @@ def test_lw_only_build_uses_predisclosure_url(mock_osv: object, mock_nvd: object
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_mixed_cve_lw_build_uses_predisclosure(mock_osv: object, mock_nvd: object) -> None:
+    """Mixed CVE + LW build is contaminated — predisclosure only (LWLP-3576)."""
+    from fath_cuan.workflow import process_osv
+
+    data = {
+        "buildId": "mixed-build",
+        "ecosystem": "maven",
+        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 1},
+        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
+        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
+        "vulns": ["CVE-2024-25710", "LW-2026-0001"],
+        "created": "2026-07-15T14:02:27+00:00",
+        "advisoryId": "RHLW-2026-aaaa1111bbbb2222",
+    }
+    results = process_osv(data)
+    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
+    assert len(advisory) == 1
+    lw_meta = advisory[0]["affected"][0]["database_specific"]["lightwell"]
+    assert "/predisclosure/" in lw_meta["repository_url"], (
+        "Mixed CVE+LW build must route to predisclosure"
+    )
+    assert "/remediated/" not in lw_meta["repository_url"]
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_embargoed_cve_excluded_from_advisory_upstream(mock_osv: object, mock_nvd: object) -> None:
     """An embargoed CVE must not appear in the advisory upstream field (LWLP-3576)."""
     from unittest.mock import patch as _patch

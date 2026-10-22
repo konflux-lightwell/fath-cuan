@@ -779,15 +779,14 @@ def _build_advisory_record(
     public_ids = [cid for cid in cve_ids if not cid.startswith("LW-")]
     all_upstream_ids = list(dict.fromkeys(public_ids + ghsa_ids))
 
-    # Determine if this is a novel-only (predisclosure) build.
-    has_public_cves = any(not cid.startswith("LW-") for cid in cve_ids)
-    is_novel_only = bool(cve_ids) and not has_public_cves
+    # Any LW- presence contaminates the build — predisclosure only.
+    has_lw = any(cid.startswith("LW-") for cid in cve_ids)
 
     # Affected entries: single Red Hat Lightwell ecosystem per package.
     affected: list[AffectedEntry] = []
     for mc in resolved_modules:
         vl_purl = _versionless_purl(mc)
-        if is_novel_only:
+        if has_lw:
             repo_url = _PREDISCLOSURE_URLS.get(mc.ecosystem, "")
         else:
             repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
