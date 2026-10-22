@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -271,8 +272,10 @@ def test_oras_failure_retries_and_removes_credentials(tmp_path, monkeypatch):
 
     monkeypatch.setattr(registry.subprocess, "run", fail)
     monkeypatch.setattr(registry.time, "sleep", lambda delay: None)
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"auths": {}}')
     with pytest.raises(ValueError, match="attachment failed"):
-        registry.attach_index(REFERENCE, payload)
+        registry.attach_index(REFERENCE, payload, auth_file=auth)
     assert len(calls) == 3
     assert all(not Path(call[call.index("--registry-config") + 1]).exists() for call in calls)
 
@@ -288,11 +291,71 @@ def test_validated_publishes_without_git_history(tmp_path, fake_oras, monkeypatc
     plain.mkdir()
     monkeypatch.setenv("VULN_IDS", "CVE-2025-99999")
     arguments = cli_arguments(tmp_path, plain, build_type="Validated", computed="1.0")
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"auths": {}}')
+    arguments.append(f"--auth-file={auth}")
     result = CliRunner().invoke(build_index.main, arguments)
     assert result.exit_code == 0, result.output
     document = json.loads(json.loads(fake_oras.read_text())["payload"])
     assert document["vulns"] == []
     assert (tmp_path / "results/BUILD_INDEX_DIGEST").exists()
+
+
+def test_index_discovers_credentials_using_existing_helper(tmp_path, monkeypatch, fake_oras):
+    helper = tmp_path / "bin" / "select-oci-auth"
+    helper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['AUTH_RECORD']).write_text(sys.argv[1])\n"
+        "print(Path(os.environ['AUTHFILE']).read_text())\n"
+    )
+    helper.chmod(0o755)
+    original = tmp_path / "existing-auth.json"
+    config = {"auths": {"registry.test/team": {"auth": "test-credential"}}}
+    original.write_text(json.dumps(config))
+    record = tmp_path / "auth-record"
+    monkeypatch.setenv("AUTHFILE", str(original))
+    monkeypatch.setenv("AUTH_RECORD", str(record))
+    payload = tmp_path / "build-index.json"
+    payload.write_text("{}")
+
+    registry.attach_index(REFERENCE, payload)
+
+    assert record.read_text() == REFERENCE
+    publication = json.loads(fake_oras.read_text())
+    assert publication["auth"] == {"auths": {"registry.test": {"auth": "test-credential"}}}
+    assert publication["mode"] == 0o600
+    assert not Path(publication["auth_path"]).parent.exists()
+    assert json.loads(original.read_text()) == config
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout", "missing", "malformed", "invalid-shape"])
+def test_index_discovery_failure_never_publishes_or_leaks(tmp_path, monkeypatch, capsys, failure):
+    paths = []
+
+    def helper(command, **kwargs):
+        assert command == ["select-oci-auth", REFERENCE]
+        assert kwargs["stderr"] == subprocess.PIPE
+        assert kwargs["timeout"] == 17
+        output = kwargs["stdout"]
+        paths.append(Path(output.name))
+        assert paths[-1].stat().st_mode & 0o777 == 0o600
+        output.write("[]" if failure == "invalid-shape" else "private-token")
+        if failure == "exit":
+            raise subprocess.CalledProcessError(1, command, stderr=b"private-token")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 17, stderr=b"private-token")
+        if failure == "missing":
+            raise FileNotFoundError("private-token")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(registry.subprocess, "run", helper)
+    with pytest.raises(ValueError) as error:
+        registry.attach_index(REFERENCE, tmp_path / "build-index.json", timeout=17)
+    assert "private-token" not in str(error.value)
+    assert "private-token" not in repr(capsys.readouterr())
+    assert paths and all(not path.parent.exists() for path in paths)
 
 
 @pytest.mark.parametrize("manifest_uri", ["", "registry.test/manifest@sha256:abc"])
@@ -341,9 +404,7 @@ def test_tekton_restores_artifacts_then_dispatches_one_cli(
     assert active[-1] == commands[0]
     assert commands[0]["command"] == ["fath-cuan-attach-build-index"]
     arguments = [
-        re.sub(r"\$\(params\.([^)]+)\)", lambda m: parameters[m[1]], value).replace(
-            "$(workspaces.registry-auth.path)", str(tmp_path)
-        )
+        re.sub(r"\$\(params\.([^)]+)\)", lambda m: parameters[m[1]], value)
         for value in commands[0]["args"]
     ]
     captured = {}
@@ -356,6 +417,8 @@ def test_tekton_restores_artifacts_then_dispatches_one_cli(
     result = CliRunner().invoke(build_index.main, arguments)
     assert result.exit_code == 0, result.output
     assert bool(captured["manifest_path"]) is bool(manifest_uri)
+    assert captured["auth_file"] is None
+    assert "workspaces" not in task
     assert set(item["name"] for item in task["results"]) == {
         "BUILD_INDEX_ATTACHED_REF",
         "BUILD_INDEX_DIGEST",

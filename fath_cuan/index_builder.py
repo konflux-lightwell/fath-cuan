@@ -199,7 +199,7 @@ def build_index_document(
         raise ValueError(
             f"remediation build (--require-vuln) but upstream base equals the full "
             f"version ('{coord.version}'); --version-local must carry a remediation "
-            f"qualifier (Maven '.rhlw-NNNNN', PyPI '+rhlw.N')"
+            f"qualifier (Maven '.rhlw-NNNNN' or '-rhlw-NNNNN', PyPI '+rhlw.N')"
         )
     if resolved.vulns:
         logger.info(
@@ -254,7 +254,7 @@ def migrate_document(gav_index: dict[str, Any]) -> dict[str, Any]:
     later gets a CVE assigned would land in the backport bucket), but it is
     strictly better than asserting 0/0, which would make every migrated build
     look like a non-remediation to consumers filtering on ``b + n > 0``. It also
-    means a legacy index whose ``primaryGav`` lacks the ``.rhlw-`` qualifier is
+    means a legacy index whose ``primaryGav`` lacks an ``rhlw`` qualifier is
     caught by the BuildIndex remediation guard rather than silently emitting an
     advisory whose fix is its own vulnerable version.
     """

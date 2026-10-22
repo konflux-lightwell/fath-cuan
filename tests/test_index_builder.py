@@ -222,7 +222,7 @@ def test_migrate_derives_b_n_from_vuln_prefixes() -> None:
 
 
 def test_migrate_rejects_non_rhlw_primary_gav() -> None:
-    # primaryGav lacks the .rhlw- qualifier -> upstream == full with vulns present
+    # primaryGav lacks an rhlw qualifier -> upstream == full with vulns present
     # -> the BuildIndex remediation guard fires (item 21).
     src = {**SAMPLE_INPUT_DATA, "primaryGav": "org.example:artifact:1.0.0", "gavs": []}
     with pytest.raises(ValueError, match=r"version\.full distinct"):
