@@ -134,7 +134,6 @@ spec:
     - --image-ref=$(params.IMAGE_REF)
     - --workdir=/var/workdir
     - --results-dir=/tekton/results
-    - --auth-file=$(workspaces.registry-auth.path)/.dockerconfigjson
     - --ca-bundle=/mnt/trusted-ca/ca-bundle.crt
     - --manifest-artifact=$(params.MANIFEST_ARTIFACT)
     - --manifest-path=/var/workdir/manifest/build-manifest.json
@@ -152,10 +151,3 @@ spec:
     name: trusted-ca
   - emptyDir: {}
     name: workdir
-  workspaces:
-  - name: registry-auth
-    description: >-
-      Bind a kubernetes.io/dockerconfigjson Secret containing .dockerconfigjson; also attach it to the
-      TaskRun service account for trusted artifacts.
-    mountPath: /mnt/registry-auth
-    readOnly: true

@@ -13,9 +13,10 @@ trusted artifacts are restored by separate `build-trusted-artifacts` steps.
 - `IMAGE_REF`: digest-pinned wheels image to attach the index to.
 - `PACKAGE`, `VERSION`, `COMPUTED_VERSION`, `BUILD_TYPE`: package and build identity.
 
-Bind the `registry-auth` workspace to a Docker config Secret containing
-`.dockerconfigjson`. The TaskRun service account also needs trusted-artifact
-credentials. Requires Tekton Pipelines 1.0 or newer.
+Registry credentials are selected by `select-oci-auth`, using the existing
+Konflux service-account setup. No additional Secret or workspace is required.
+Local runs can override discovery with `--auth-file`. Trusted-artifact steps
+retain their existing credentials. Requires Tekton Pipelines 1.0 or newer.
 
 Backport and Novel builds require vulnerability evidence. An omitted manifest
 is allowed; a supplied manifest must exist and be valid.
