@@ -69,15 +69,16 @@ def attach_index(
 ) -> None:
     """Attach exact payload bytes with ORAS, retrying nonzero exits up to three times.
 
-    Credentials come from the explicit auth file, AUTHFILE, or Docker's default
-    configuration. A private temporary config scopes them to the target repository
-    and is removed on success or failure. The input credential file is unchanged.
+    Credentials come from select-oci-auth, preserving Konflux credential discovery.
+    An explicit auth file overrides discovery for local runs. A private temporary
+    config scopes credentials to the target repository and is removed on success
+    or failure. The input credential file is unchanged.
     This publishes a final OCI referrer; trusted-artifact transport stays in Tekton.
 
     Args:
         reference: Qualified digest-pinned subject image reference.
         payload: Generated build-index.json file; its basename is preserved on upload.
-        auth_file: Docker configuration overriding environment/default credentials.
+        auth_file: Docker configuration overriding select-oci-auth discovery.
         ca_bundle: Optional PEM trust bundle passed to ORAS through SSL_CERT_FILE.
         timeout: Maximum seconds allowed for one attachment attempt.
 
@@ -86,13 +87,6 @@ def attach_index(
         OSError: Credentials or payload cannot be read.
     """
     reference = pinned_reference(reference)
-    configured = Path(os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker"))) / "config.json"
-    original = auth_file or Path(os.environ.get("AUTHFILE", str(configured)))
-    config = read_json(original) if original.is_file() else {}
-    if auth_file is not None and not original.is_file():
-        raise ValueError("Explicit registry authentication file is missing")
-    if not isinstance(config, dict):
-        raise ValueError("Registry authentication configuration must be an object")
     environment = dict(os.environ)
     if ca_bundle is not None and ca_bundle.is_file():
         environment["SSL_CERT_FILE"] = str(ca_bundle.resolve())
@@ -100,7 +94,16 @@ def attach_index(
     with tempfile.TemporaryDirectory(prefix="fath-cuan-auth-") as directory:
         credentials = Path(directory) / "config.json"
         credentials.touch(mode=0o600)
-        credentials.write_text(json.dumps(scoped_auth(reference, config)), encoding="utf-8")
+        if auth_file is None:
+            _discover_auth(reference, credentials, environment, timeout)
+        try:
+            config = read_json(auth_file or credentials)
+            if not isinstance(config, dict):
+                raise ValueError("Registry authentication configuration must be an object")
+            config = scoped_auth(reference, config)
+        except (OSError, ValueError):
+            raise ValueError("Unable to read registry authentication configuration") from None
+        credentials.write_text(json.dumps(config), encoding="utf-8")
         command = [
             "oras",
             "attach",
@@ -127,3 +130,19 @@ def attach_index(
             if attempt < 2:
                 time.sleep(2**attempt)
         raise ValueError(f"ORAS attachment failed with status {result.returncode}")
+
+
+def _discover_auth(reference: str, path: Path, environment: dict[str, str], timeout: float) -> None:
+    """Capture helper credentials privately, suppressing output from failed discovery."""
+    try:
+        with path.open("w", encoding="utf-8") as output:
+            subprocess.run(
+                ["select-oci-auth", reference],
+                stdout=output,
+                stderr=subprocess.PIPE,
+                env=environment,
+                timeout=timeout,
+                check=True,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"Unable to select registry credentials: {type(exc).__name__}") from None

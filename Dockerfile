@@ -56,6 +56,7 @@ ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 
 # Validate the task entrypoint and external tools in the runtime image.
 RUN fath-cuan-attach-build-index --help \
+    && command -v select-oci-auth \
     && git --version \
     && oras version
 
