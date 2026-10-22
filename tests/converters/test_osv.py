@@ -142,6 +142,39 @@ def test_mixed_cve_lw_build_uses_predisclosure(mock_osv: object, mock_nvd: objec
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_lw_ids_excluded_from_details_and_references(mock_osv: object, mock_nvd: object) -> None:
+    """LW- IDs must not appear in advisory details text or NVD references (LWLP-3576)."""
+    from fath_cuan.workflow import process_osv
+
+    data = {
+        "buildId": "mixed-details-build",
+        "ecosystem": "maven",
+        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 1},
+        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
+        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
+        "vulns": ["CVE-2024-25710", "LW-2026-0001"],
+        "created": "2026-07-15T14:02:27+00:00",
+        "advisoryId": "RHLW-2026-cccc3333dddd4444",
+    }
+    results = process_osv(data)
+    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
+    assert len(advisory) == 1
+    record = advisory[0]
+
+    # LW- ID must not appear in details text
+    details = record.get("details", "")
+    assert "LW-2026-0001" not in details, "LW- ID leaked into advisory details"
+
+    # NVD reference must exist for CVE- but not for LW-
+    ref_urls = [r["url"] for r in record.get("references", [])]
+    nvd_cve_url = "https://nvd.nist.gov/vuln/detail/CVE-2024-25710"
+    nvd_lw_url = "https://nvd.nist.gov/vuln/detail/LW-2026-0001"
+    assert nvd_cve_url in ref_urls, "CVE NVD reference missing"
+    assert nvd_lw_url not in ref_urls, "LW- NVD reference leaked"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_embargoed_cve_excluded_from_advisory_upstream(mock_osv: object, mock_nvd: object) -> None:
     """An embargoed CVE must not appear in the advisory upstream field (LWLP-3576)."""
     from unittest.mock import patch as _patch

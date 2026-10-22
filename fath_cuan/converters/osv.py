@@ -593,7 +593,9 @@ def _synthesize_details(
     base_version = coord.base_version
     cve_ids = [cid for cid, _ in per_cve_descriptions]
 
-    if len(cve_ids) == 1:
+    if len(cve_ids) == 0:
+        fix_desc = "embargoed security fixes"
+    elif len(cve_ids) == 1:
         fix_desc = "a backported security fix"
     elif len(cve_ids) == 2:
         fix_desc = f"backported fixes for {cve_ids[0]} and {cve_ids[1]}"
@@ -721,7 +723,9 @@ def _build_advisory_record(
                     break
         if not desc and osidb_meta:
             desc = osidb_meta.get("title", "")
-        per_cve_descriptions.append((cve_id, desc))
+        # LW- IDs are embargoed — exclude from advisory details text.
+        if not cve_id.startswith("LW-"):
+            per_cve_descriptions.append((cve_id, desc))
 
         # Public references from upstream (filtered)
         if upstream:
@@ -730,8 +734,9 @@ def _build_advisory_record(
                 if url and _is_public_url(url):
                     ref_type = _classify_advisory_reference(url, r.get("type", "WEB"))
                     all_refs.append(Reference(url=url, type=ref_type))
-        nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
-        all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
+        if cve_id.startswith("CVE-"):
+            nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+            all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
 
         # GHSA advisory references
         if upstream:
