@@ -68,6 +68,17 @@ _REPOSITORY_URLS: dict[str, str] = {
     ),
 }
 
+_PREDISCLOSURE_URLS: dict[str, str] = {
+    "maven": os.environ.get(
+        "FATH_CUAN_REPOSITORY_URL_MAVEN_PREDISCLOSURE",
+        "https://packages.redhat.com/lightwell/java/predisclosure/",
+    ),
+    "pypi": os.environ.get(
+        "FATH_CUAN_REPOSITORY_URL_PYPI_PREDISCLOSURE",
+        "https://packages.redhat.com/lightwell/python/predisclosure/",
+    ),
+}
+
 _REGISTRY_NAMES: dict[str, str] = {
     "maven": "Maven Central",
     "pypi": "PyPI",
@@ -665,12 +676,12 @@ def _build_advisory_record(
         osidb_meta: dict[str, Any] | None = data["osidb_meta"]
         upstream: dict[str, Any] | None = data["upstream"]
         nvd: dict[str, Any] | None = data["nvd"]
-        cve_ids.append(cve_id)
 
         if osidb_meta and osidb_meta.get("embargoed"):
             logger.warning("Skipping embargoed %s in advisory %s", cve_id, advisory_id)
             continue
 
+        cve_ids.append(cve_id)
         upstream_cache[cve_id] = upstream
 
         # Collect GHSA aliases from upstream
@@ -763,14 +774,23 @@ def _build_advisory_record(
                     filtered_ghsa.append(alias)
     ghsa_ids = filtered_ghsa
 
-    # upstream IDs: CVEs first, then GHSAs, deduplicated
-    all_upstream_ids = list(dict.fromkeys(cve_ids + ghsa_ids))
+    # upstream IDs: only public CVEs and GHSAs — LW- IDs are embargoed
+    # and must never appear in a publicly-routable advisory record.
+    public_ids = [cid for cid in cve_ids if not cid.startswith("LW-")]
+    all_upstream_ids = list(dict.fromkeys(public_ids + ghsa_ids))
+
+    # Determine if this is a novel-only (predisclosure) build.
+    has_public_cves = any(not cid.startswith("LW-") for cid in cve_ids)
+    is_novel_only = bool(cve_ids) and not has_public_cves
 
     # Affected entries: single Red Hat Lightwell ecosystem per package.
     affected: list[AffectedEntry] = []
     for mc in resolved_modules:
         vl_purl = _versionless_purl(mc)
-        repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
+        if is_novel_only:
+            repo_url = _PREDISCLOSURE_URLS.get(mc.ecosystem, "")
+        else:
+            repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
 
         introduced_versions: list[str] = []
         upstream_versions: list[str] = []

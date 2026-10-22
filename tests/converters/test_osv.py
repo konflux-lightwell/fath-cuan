@@ -68,6 +68,86 @@ def test_accepts_osgi_qualified_hyphen_suffix(mock_osv: object, mock_nvd: object
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_lw_ids_excluded_from_advisory_upstream(mock_osv: object, mock_nvd: object) -> None:
+    """LW- IDs must not appear in the advisory upstream field (LWLP-3576)."""
+    from fath_cuan.workflow import process_osv
+
+    data = {
+        "buildId": "mixed-build",
+        "ecosystem": "maven",
+        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 1},
+        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
+        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
+        "vulns": ["CVE-2024-25710", "LW-2026-0001"],
+        "created": "2026-07-15T14:02:27+00:00",
+        "advisoryId": "RHLW-2026-abcd1234abcd1234",
+    }
+    results = process_osv(data)
+    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
+    assert len(advisory) == 1
+    upstream_ids = advisory[0].get("upstream", [])
+    assert "CVE-2024-25710" in upstream_ids
+    assert "LW-2026-0001" not in upstream_ids, "LW- IDs must not leak to upstream"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_lw_only_build_uses_predisclosure_url(mock_osv: object, mock_nvd: object) -> None:
+    """LW-only builds must route to predisclosure, never remediated (LWLP-3576)."""
+    from fath_cuan.workflow import process_osv
+
+    data = {
+        "buildId": "novel-build",
+        "ecosystem": "maven",
+        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 0, "n": 1},
+        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
+        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
+        "vulns": ["LW-2026-0001"],
+        "created": "2026-07-15T14:02:27+00:00",
+        "advisoryId": "RHLW-2026-1234567812345678",
+    }
+    results = process_osv(data)
+    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
+    assert len(advisory) == 1
+    lw_meta = advisory[0]["affected"][0]["database_specific"]["lightwell"]
+    assert "/predisclosure/" in lw_meta["repository_url"]
+    assert "/remediated/" not in lw_meta["repository_url"]
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_embargoed_cve_excluded_from_advisory_upstream(mock_osv: object, mock_nvd: object) -> None:
+    """An embargoed CVE must not appear in the advisory upstream field (LWLP-3576)."""
+    from unittest.mock import patch as _patch
+
+    from fath_cuan.workflow import process_osv
+
+    def fake_prefetch(cve_id, osidb_client):
+        if cve_id == "CVE-2024-99999":
+            return {"osidb_meta": {"embargoed": True}, "upstream": None, "nvd": None}
+        return {"osidb_meta": None, "upstream": None, "nvd": None}
+
+    data = {
+        "buildId": "embargo-build",
+        "ecosystem": "maven",
+        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 2, "n": 0},
+        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
+        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
+        "vulns": ["CVE-2024-25710", "CVE-2024-99999"],
+        "created": "2026-07-15T14:02:27+00:00",
+        "advisoryId": "RHLW-2026-deadbeef12345678",
+    }
+    with _patch("fath_cuan.converters.osv._prefetch_cve", side_effect=fake_prefetch):
+        results = process_osv(data)
+    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
+    assert len(advisory) == 1
+    upstream_ids = advisory[0].get("upstream", [])
+    assert "CVE-2024-25710" in upstream_ids
+    assert "CVE-2024-99999" not in upstream_ids, "Embargoed CVE must not leak"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_deduplicates_cves(mock_osv: object, mock_nvd: object) -> None:
     doc = InputDocument.from_dict(SAMPLE_DUPLICATE_CVE_DATA)
     results = convert(doc)
