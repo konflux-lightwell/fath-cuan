@@ -6,6 +6,7 @@ from fath_cuan.converters.osv import (
     _base_version,
     _classify_reference_type,
     _extract_introduced,
+    _extract_severity,
     _jira_severity,
     _parse_gav,
     convert,
@@ -264,6 +265,32 @@ def test_cvss_v4_from_nvd(mock_nvd: object, mock_osv: object) -> None:
     results = convert(doc)
     types = [s.type for s in results[0].severity]
     assert "CVSS_V3" in types
+    assert "CVSS_V4" in types
+    assert types[0] == "CVSS_V3", "V3 must be the primary severity entry"
+
+
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+@patch("fath_cuan.converters.osv._fetch_nvd")
+def test_v3_promoted_over_upstream_v4(mock_nvd: object, mock_osv: object) -> None:
+    """When upstream provides only V4 and NVD has V3, V3 must come first."""
+    v4_vector = "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:L/SC:H/SI:N/SA:N"
+    mock_osv.return_value = {
+        "severity": [{"type": "CVSS_V4", "score": v4_vector}],
+        "aliases": ["CVE-2024-25710"],
+        "summary": "Test summary",
+    }
+    mock_nvd.return_value = {
+        "descriptions": [{"lang": "en", "value": "test"}],
+        "metrics": {
+            "cvssMetricV31": [
+                {"cvssData": {"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"}}
+            ],
+        },
+    }
+    doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
+    results = convert(doc)
+    types = [s.type for s in results[0].severity]
+    assert types[0] == "CVSS_V3"
     assert "CVSS_V4" in types
 
 
@@ -803,6 +830,57 @@ def test_jira_severity_non_cvss_returns_empty() -> None:
 
 def test_jira_severity_empty_returns_empty() -> None:
     assert _jira_severity("") == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_severity ordering
+# ---------------------------------------------------------------------------
+
+
+def test_extract_severity_v3_first_when_both_present() -> None:
+    """V3 must be the first entry even when upstream provides V4 first."""
+    upstream = {
+        "severity": [
+            {"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H"},
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+        ],
+    }
+    result = _extract_severity(upstream, None)
+    assert len(result) == 2
+    assert result[0].type == "CVSS_V3"
+    assert result[1].type == "CVSS_V4"
+
+
+def test_extract_severity_v3_from_nvd_promoted_over_upstream_v4() -> None:
+    """NVD V3 must sort ahead of upstream V4."""
+    upstream = {
+        "severity": [
+            {"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H"},
+        ],
+    }
+    nvd = {
+        "metrics": {
+            "cvssMetricV31": [
+                {"cvssData": {"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"}}
+            ],
+        },
+    }
+    result = _extract_severity(upstream, nvd)
+    assert len(result) == 2
+    assert result[0].type == "CVSS_V3"
+    assert result[1].type == "CVSS_V4"
+
+
+def test_extract_severity_v4_only_when_no_v3_available() -> None:
+    """When only V4 is available, it is still returned."""
+    upstream = {
+        "severity": [
+            {"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H"},
+        ],
+    }
+    result = _extract_severity(upstream, None)
+    assert len(result) == 1
+    assert result[0].type == "CVSS_V4"
 
 
 # ---------------------------------------------------------------------------
