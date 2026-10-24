@@ -55,7 +55,7 @@ _ADVISORY_PATTERNS = (
     "access.redhat.com/security/cve/",
 )
 
-_CVSS_TYPE_RANK = {"CVSS_V4": 3, "CVSS_V3": 2, "CVSS_V2": 1}
+_CVSS_TYPE_RANK = {"CVSS_V3": 3, "CVSS_V4": 2, "CVSS_V2": 1}
 
 _REPOSITORY_URLS: dict[str, str] = {
     "maven": os.environ.get(
@@ -156,7 +156,12 @@ def _jira_severity(severity_value: str) -> list[Severity]:
 
 
 def _extract_severity(upstream: dict[str, Any], nvd: dict[str, Any] | None) -> list[Severity]:
-    """Extract CVSS severity from upstream OSV and NVD, including v3.1 and v4.0."""
+    """Extract CVSS severity from upstream OSV and NVD, preferring V3.
+
+    V3 is placed first in the returned list so that consumers which read
+    only the primary entry always get the most widely-used baseline.  V4
+    and V2 are included as secondary entries when available.
+    """
     result: list[Severity] = []
     seen_types: set[str] = set()
 
@@ -184,6 +189,9 @@ def _extract_severity(upstream: dict[str, Any], nvd: dict[str, Any] | None) -> l
                 result.append(Severity(type="CVSS_V4", score=vector))
                 seen_types.add("CVSS_V4")
                 break
+
+    # Sort V3 to the front so the primary entry is consistent across runs.
+    result.sort(key=lambda s: _CVSS_TYPE_RANK.get(s.type, 0), reverse=True)
 
     return result
 
