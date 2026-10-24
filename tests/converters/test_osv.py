@@ -862,6 +862,14 @@ def test_lw_id_database_specific(mock_jira: object) -> None:
     assert lw.lw_id == "LW-2026-0468"
 
 
+def test_lw_id_no_jira_client_skips_fetch() -> None:
+    """_fetch_jira returns None without making a request when no client is provided."""
+    from fath_cuan.converters.osv import _fetch_jira
+
+    assert _fetch_jira("LW-2026-0468") is None
+    assert _fetch_jira("LW-2026-0468", client=None) is None
+
+
 @patch("fath_cuan.converters.osv._fetch_jira")
 def test_lw_id_jira_returns_none(mock_jira: object) -> None:
     mock_jira.return_value = None
