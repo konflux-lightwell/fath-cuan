@@ -139,9 +139,7 @@ def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
 
 def _fetch_jira(lw_id: str, client: JiraClient | None = None) -> VulnerabilityData | None:
     """Fetch vulnerability data from JIRA for a Lightwell identifier."""
-    if client is None:
-        return None
-    jira = client
+    jira = client or JiraClient()
     logger.debug("Fetching JIRA vulnerability data for %s", lw_id)
     try:
         result = jira.fetch_vulnerability(lw_id)
