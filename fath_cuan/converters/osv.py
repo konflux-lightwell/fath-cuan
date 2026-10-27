@@ -94,6 +94,102 @@ _parse_gav = parse_gav
 _base_version = maven_base_version
 
 
+_OSV_QUERY = "https://api.osv.dev/v1/query"
+
+
+def _fetch_lightwell_advisories(
+    package_name: str, osv_ecosystem: str
+) -> list[dict[str, Any]]:
+    """Fetch published Lightwell advisories for a package from osv.dev.
+
+    Issues a single POST to the OSV query API scoped to the
+    ``Red Hat Lightwell:<ecosystem>`` ecosystem. Returns the full
+    advisory records (typically 0-5 per package), or an empty list
+    on network failure.
+    """
+    ecosystem = f"Red Hat Lightwell:{osv_ecosystem}"
+    payload = json.dumps(
+        {"package": {"name": package_name, "ecosystem": ecosystem}}
+    ).encode()
+    req = urllib.request.Request(
+        _OSV_QUERY,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    logger.debug(
+        "Fetching Lightwell advisories for %s in %s",
+        package_name,
+        ecosystem,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            results = data.get("vulns", [])
+            logger.debug(
+                "Found %d existing advisory/ies for %s",
+                len(results),
+                package_name,
+            )
+            return results  # type: ignore[no-any-return]
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        logger.debug(
+            "Could not fetch Lightwell advisories for %s", package_name
+        )
+        return []
+
+
+def _nonoverlapping_introduced(
+    current_fixed: str,
+    cve_ids: list[str],
+    existing_advisories: list[dict[str, Any]],
+    package_name: str,
+    fallback_introduced: str,
+) -> str:
+    """Compute a non-overlapping ``introduced`` version.
+
+    When multiple advisories fix the same CVE across different version
+    branches of a package, their ECOSYSTEM ranges must not overlap.
+    This function collects the ``fixed`` versions from sibling
+    advisories (same package, shared CVEs), sorts them together with
+    the current build's fixed version, and returns the previous
+    sibling's ``fixed`` as the ``introduced`` value. For the lowest
+    fixed version the *fallback_introduced* (typically ``"0"`` or the
+    upstream ``introduced``) is returned unchanged.
+    """
+    current_cves = set(cve_ids)
+    sibling_fixed: list[str] = []
+    for adv in existing_advisories:
+        adv_upstream = set(adv.get("upstream", []))
+        if not (adv_upstream & current_cves):
+            continue
+        for aff in adv.get("affected", []):
+            if aff.get("package", {}).get("name") != package_name:
+                continue
+            for rng in aff.get("ranges", []):
+                for ev in rng.get("events", []):
+                    fixed = ev.get("fixed")
+                    if fixed and fixed != current_fixed:
+                        sibling_fixed.append(fixed)
+
+    if not sibling_fixed:
+        return fallback_introduced
+
+    all_fixed = sorted(
+        set([*sibling_fixed, current_fixed]), key=_version_key
+    )
+    try:
+        idx = all_fixed.index(current_fixed)
+    except ValueError:
+        return fallback_introduced
+
+    if idx == 0:
+        return fallback_introduced
+    return all_fixed[idx - 1]
+
+
 def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
     """Fetch upstream OSV record for a CVE from osv.dev."""
     url = f"{_OSV_API}/{urllib.parse.quote(cve_id, safe='')}"
@@ -436,9 +532,22 @@ def _resolve_affected(
     return [], False
 
 
-def _affected_entry(c: Coordinate, upstream: dict[str, Any] | None) -> AffectedEntry:
-    """Build an OSV AffectedEntry for a built coordinate, with the upstream introduced range."""
+def _affected_entry(
+    c: Coordinate,
+    upstream: dict[str, Any] | None,
+    cve_ids: list[str] | None = None,
+) -> AffectedEntry:
+    """Build an OSV AffectedEntry for a built coordinate.
+
+    When *cve_ids* is provided, queries existing Lightwell advisories
+    to avoid overlapping ranges (LWLP-3883).
+    """
     introduced = _extract_introduced(upstream, c.name, c.osv_ecosystem) if upstream else "0"
+    if cve_ids:
+        existing = _fetch_lightwell_advisories(c.name, c.osv_ecosystem)
+        introduced = _nonoverlapping_introduced(
+            c.version, cve_ids, existing, c.name, introduced
+        )
     return AffectedEntry(
         package=Package(name=c.name, purl=c.purl, ecosystem=c.osv_ecosystem),
         versions=[c.base_version],
@@ -789,6 +898,16 @@ def _build_advisory_record(
                     introduced_versions.append(v)
                 upstream_versions.extend(_extract_versions(ups, mc.name, mc.osv_ecosystem))
         introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
+
+        # Avoid overlapping ranges when the same CVE is fixed across
+        # multiple version branches of the same package (LWLP-3883).
+        existing = _fetch_lightwell_advisories(
+            mc.name, mc.osv_ecosystem
+        )
+        introduced = _nonoverlapping_introduced(
+            mc.version, cve_ids, existing, mc.name, introduced
+        )
+
         versions = sorted(set(upstream_versions), key=_version_key) or [mc.base_version]
 
         affected.append(
@@ -1135,7 +1254,7 @@ def _build_records(
         # stamping the build's arbitrary primary coordinate on every vuln.
         matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
         if matched:
-            affected_entries = [_affected_entry(mc, upstream) for mc in matched]
+            affected_entries = [_affected_entry(mc, upstream, [cve_id]) for mc in matched]
         elif strict:
             # Reached only when an authoritative source (upstream advisory, with
             # OSIDB consulted as a fallback in _resolve_affected) named affected
@@ -1157,7 +1276,7 @@ def _build_records(
             )
             continue
         else:
-            affected_entries = [_affected_entry(coord, upstream)]
+            affected_entries = [_affected_entry(coord, upstream, [cve_id])]
 
         lw_meta = LightwellMeta(
             source=source,

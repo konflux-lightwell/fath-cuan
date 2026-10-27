@@ -1,7 +1,22 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_lightwell_advisory_network(request):
+    """Prevent real HTTP calls to osv.dev for sibling advisory lookups.
+
+    Tests that need to supply specific sibling data override this by
+    patching ``_fetch_lightwell_advisories`` explicitly.
+    """
+    with patch(
+        "fath_cuan.converters.osv._fetch_lightwell_advisories",
+        return_value=[],
+    ):
+        yield
 
 SAMPLE_INPUT_DATA = {
     "buildId": "BQA6SUOGYCIAA",
