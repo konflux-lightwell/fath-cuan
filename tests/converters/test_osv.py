@@ -8,6 +8,7 @@ from fath_cuan.converters.osv import (
     _extract_introduced,
     _extract_severity,
     _jira_severity,
+    _nonoverlapping_introduced,
     _parse_gav,
     convert,
 )
@@ -1175,3 +1176,214 @@ def test_advisory_record_conforms_to_osv_schema(mock_osv: object, mock_nvd: obje
         "additionalProperties": False,
     }
     jsonschema.validate(dumped, osv_schema)
+
+
+# ---------------------------------------------------------------------------
+# Overlapping range prevention (LWLP-3883)
+# ---------------------------------------------------------------------------
+
+
+def _sibling_advisory(
+    advisory_id: str,
+    pkg_name: str,
+    cve_ids: list[str],
+    introduced: str,
+    fixed: str,
+) -> dict:
+    """Build a minimal existing-advisory dict as returned by osv.dev."""
+    return {
+        "id": advisory_id,
+        "upstream": cve_ids,
+        "affected": [
+            {
+                "package": {
+                    "ecosystem": "Red Hat Lightwell:Maven",
+                    "name": pkg_name,
+                },
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [
+                            {"introduced": introduced},
+                            {"fixed": fixed},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_nonoverlapping_lowest_keeps_fallback() -> None:
+    """The lowest fixed version keeps the fallback introduced value."""
+    existing = [
+        _sibling_advisory(
+            "RHLW-B", "g:a", ["CVE-1"], "0", "2.0.0.rhlw-00001"
+        ),
+    ]
+    result = _nonoverlapping_introduced(
+        "1.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0"
+    )
+    assert result == "0"
+
+
+def test_nonoverlapping_second_gets_previous_fixed() -> None:
+    """The second-lowest fixed version starts at the first's fixed."""
+    existing = [
+        _sibling_advisory(
+            "RHLW-A", "g:a", ["CVE-1"], "0", "5.0.3.rhlw-00001"
+        ),
+    ]
+    result = _nonoverlapping_introduced(
+        "6.0.3.rhlw-00001", ["CVE-1"], existing, "g:a", "0"
+    )
+    assert result == "5.0.3.rhlw-00001"
+
+
+def test_nonoverlapping_third_gets_second_fixed() -> None:
+    """The third fixed version starts at the second's fixed."""
+    existing = [
+        _sibling_advisory(
+            "RHLW-A", "g:a", ["CVE-1"], "0", "5.0.3.rhlw-00001"
+        ),
+        _sibling_advisory(
+            "RHLW-B", "g:a", ["CVE-1"], "0", "6.0.3.rhlw-00001"
+        ),
+    ]
+    result = _nonoverlapping_introduced(
+        "6.2.2.rhlw-00004", ["CVE-1"], existing, "g:a", "0"
+    )
+    assert result == "6.0.3.rhlw-00001"
+
+
+def test_nonoverlapping_woodstox_scenario() -> None:
+    """Full woodstox-core reproduction: three branches, same CVE."""
+    pkg = "com.fasterxml.woodstox:woodstox-core"
+    existing = [
+        _sibling_advisory(
+            "RHLW-dd8e", pkg, ["CVE-2022-40152"], "0",
+            "5.0.3.rhlw-00001",
+        ),
+        _sibling_advisory(
+            "RHLW-403d", pkg, ["CVE-2022-40152"], "0",
+            "6.0.3.rhlw-00001",
+        ),
+    ]
+    # Building the highest branch (6.2.2).
+    result = _nonoverlapping_introduced(
+        "6.2.2.rhlw-00004", ["CVE-2022-40152"], existing, pkg, "0"
+    )
+    assert result == "6.0.3.rhlw-00001"
+
+    # Building the middle branch (6.0.3) with the lowest already published.
+    result_mid = _nonoverlapping_introduced(
+        "6.0.3.rhlw-00001",
+        ["CVE-2022-40152"],
+        [existing[0]],
+        pkg,
+        "0",
+    )
+    assert result_mid == "5.0.3.rhlw-00001"
+
+
+def test_nonoverlapping_no_siblings() -> None:
+    """No existing advisories returns the fallback unchanged."""
+    result = _nonoverlapping_introduced(
+        "1.0.0.rhlw-00001", ["CVE-1"], [], "g:a", "0"
+    )
+    assert result == "0"
+
+
+def test_nonoverlapping_unrelated_cve_ignored() -> None:
+    """Advisories for a different CVE are not treated as siblings."""
+    existing = [
+        _sibling_advisory(
+            "RHLW-X", "g:a", ["CVE-OTHER"], "0", "2.0.0.rhlw-00001"
+        ),
+    ]
+    result = _nonoverlapping_introduced(
+        "3.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0"
+    )
+    assert result == "0"
+
+
+def test_nonoverlapping_preserves_upstream_introduced() -> None:
+    """When the build is the lowest and fallback is non-zero, it is kept."""
+    existing = [
+        _sibling_advisory(
+            "RHLW-B", "g:a", ["CVE-1"], "0", "5.0.0.rhlw-00001"
+        ),
+    ]
+    result = _nonoverlapping_introduced(
+        "1.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0.9.0"
+    )
+    assert result == "0.9.0"
+
+
+@patch("fath_cuan.converters.osv._fetch_lightwell_advisories")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_record_uses_nonoverlapping_range(
+    mock_osv: object,
+    mock_nvd: object,
+    mock_lw: object,
+) -> None:
+    """End-to-end: advisory record adjusts introduced when siblings exist."""
+    pkg = "org.example:artifact"
+    mock_lw.return_value = [
+        _sibling_advisory(
+            "RHLW-OLDER", pkg, ["CVE-2024-25710"], "0",
+            "0.9.0.rhlw-00001",
+        ),
+    ]
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    advisory = results[0]
+    aff = advisory.affected[0]
+    events = aff.ranges[0].events
+    introduced_ev = next(e for e in events if e.introduced is not None)
+    assert introduced_ev.introduced == "0.9.0.rhlw-00001"
+
+
+@patch("fath_cuan.converters.osv._fetch_lightwell_advisories")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_record_keeps_zero_when_lowest(
+    mock_osv: object,
+    mock_nvd: object,
+    mock_lw: object,
+) -> None:
+    """When the current build is the lowest, introduced stays "0"."""
+    pkg = "org.example:artifact"
+    mock_lw.return_value = [
+        _sibling_advisory(
+            "RHLW-HIGHER", pkg, ["CVE-2024-25710"], "0",
+            "9.0.0.rhlw-00001",
+        ),
+    ]
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    advisory = results[0]
+    aff = advisory.affected[0]
+    events = aff.ranges[0].events
+    introduced_ev = next(e for e in events if e.introduced is not None)
+    assert introduced_ev.introduced == "0"
+
+
+@patch("fath_cuan.converters.osv._fetch_lightwell_advisories")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_record_network_failure_falls_back(
+    mock_osv: object,
+    mock_nvd: object,
+    mock_lw: object,
+) -> None:
+    """Network failure for sibling lookup falls back to default behaviour."""
+    mock_lw.return_value = []
+    doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
+    results = convert(doc)
+    advisory = results[0]
+    aff = advisory.affected[0]
+    events = aff.ranges[0].events
+    introduced_ev = next(e for e in events if e.introduced is not None)
+    assert introduced_ev.introduced == "0"
