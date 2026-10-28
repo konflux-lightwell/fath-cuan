@@ -18,6 +18,7 @@ def _no_lightwell_advisory_network(request):
     ):
         yield
 
+
 SAMPLE_INPUT_DATA = {
     "buildId": "BQA6SUOGYCIAA",
     "created": "2026-07-15T14:02:27+00:00",
