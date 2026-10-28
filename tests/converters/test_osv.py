@@ -1232,12 +1232,21 @@ def test_nonoverlapping_lowest_keeps_fallback() -> None:
     """The lowest fixed version keeps the fallback introduced value."""
     existing = [
         _sibling_advisory(
-            "RHLW-B", "g:a", ["CVE-1"], "0", "2.0.0.rhlw-00001",
-            base_version="2.0.0", remediated_version="2.0.0.rhlw-00001",
+            "RHLW-B",
+            "g:a",
+            ["CVE-1"],
+            "0",
+            "2.0.0.rhlw-00001",
+            base_version="2.0.0",
+            remediated_version="2.0.0.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "1.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0",
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        existing,
+        "g:a",
+        "0",
         base_version="1.0.0",
     )
     # Lowest branch: no sibling builds excluded, scoped to own base.
@@ -1248,12 +1257,21 @@ def test_nonoverlapping_scopes_to_own_base() -> None:
     """Higher branch scopes to its own base version, not sibling's fixed."""
     existing = [
         _sibling_advisory(
-            "RHLW-A", "g:a", ["CVE-1"], "0", "5.0.3.rhlw-00001",
-            base_version="5.0.3", remediated_version="5.0.3.rhlw-00001",
+            "RHLW-A",
+            "g:a",
+            ["CVE-1"],
+            "0",
+            "5.0.3.rhlw-00001",
+            base_version="5.0.3",
+            remediated_version="5.0.3.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "6.0.3.rhlw-00001", ["CVE-1"], existing, "g:a", "0",
+        "6.0.3.rhlw-00001",
+        ["CVE-1"],
+        existing,
+        "g:a",
+        "0",
         base_version="6.0.3",
     )
     assert result == "6.0.3"
@@ -1263,16 +1281,30 @@ def test_nonoverlapping_third_scopes_to_own_base() -> None:
     """The third branch also scopes to its own base."""
     existing = [
         _sibling_advisory(
-            "RHLW-A", "g:a", ["CVE-1"], "0", "5.0.3.rhlw-00001",
-            base_version="5.0.3", remediated_version="5.0.3.rhlw-00001",
+            "RHLW-A",
+            "g:a",
+            ["CVE-1"],
+            "0",
+            "5.0.3.rhlw-00001",
+            base_version="5.0.3",
+            remediated_version="5.0.3.rhlw-00001",
         ),
         _sibling_advisory(
-            "RHLW-B", "g:a", ["CVE-1"], "0", "6.0.3.rhlw-00001",
-            base_version="6.0.3", remediated_version="6.0.3.rhlw-00001",
+            "RHLW-B",
+            "g:a",
+            ["CVE-1"],
+            "0",
+            "6.0.3.rhlw-00001",
+            base_version="6.0.3",
+            remediated_version="6.0.3.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "6.2.2.rhlw-00004", ["CVE-1"], existing, "g:a", "0",
+        "6.2.2.rhlw-00004",
+        ["CVE-1"],
+        existing,
+        "g:a",
+        "0",
         base_version="6.2.2",
     )
     assert result == "6.2.2"
@@ -1284,24 +1316,42 @@ def test_nonoverlapping_woodstox_scenario() -> None:
     cve = ["CVE-2022-40152"]
     existing = [
         _sibling_advisory(
-            "RHLW-dd8e", pkg, cve, "0", "5.0.3.rhlw-00001",
-            base_version="5.0.3", remediated_version="5.0.3.rhlw-00001",
+            "RHLW-dd8e",
+            pkg,
+            cve,
+            "0",
+            "5.0.3.rhlw-00001",
+            base_version="5.0.3",
+            remediated_version="5.0.3.rhlw-00001",
         ),
         _sibling_advisory(
-            "RHLW-403d", pkg, cve, "0", "6.0.3.rhlw-00001",
-            base_version="6.0.3", remediated_version="6.0.3.rhlw-00001",
+            "RHLW-403d",
+            pkg,
+            cve,
+            "0",
+            "6.0.3.rhlw-00001",
+            base_version="6.0.3",
+            remediated_version="6.0.3.rhlw-00001",
         ),
     ]
     # Building the highest branch (6.2.2): scopes to own base.
     result = _nonoverlapping_introduced(
-        "6.2.2.rhlw-00004", cve, existing, pkg, "0",
+        "6.2.2.rhlw-00004",
+        cve,
+        existing,
+        pkg,
+        "0",
         base_version="6.2.2",
     )
     assert result == "6.2.2"
 
     # Building the middle branch (6.0.3): scopes to own base.
     result_mid = _nonoverlapping_introduced(
-        "6.0.3.rhlw-00001", cve, [existing[0]], pkg, "0",
+        "6.0.3.rhlw-00001",
+        cve,
+        [existing[0]],
+        pkg,
+        "0",
         base_version="6.0.3",
     )
     assert result_mid == "6.0.3"
@@ -1310,7 +1360,11 @@ def test_nonoverlapping_woodstox_scenario() -> None:
 def test_nonoverlapping_no_siblings() -> None:
     """No existing advisories returns base_version (no exclusions)."""
     result = _nonoverlapping_introduced(
-        "1.0.0.rhlw-00001", ["CVE-1"], [], "g:a", "0",
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        [],
+        "g:a",
+        "0",
         base_version="1.0.0",
     )
     assert result == "1.0.0"
@@ -1319,7 +1373,11 @@ def test_nonoverlapping_no_siblings() -> None:
 def test_nonoverlapping_no_base_version_keeps_fallback() -> None:
     """Without base_version, the fallback is returned unchanged."""
     result = _nonoverlapping_introduced(
-        "1.0.0.rhlw-00001", ["CVE-1"], [], "g:a", "0",
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        [],
+        "g:a",
+        "0",
     )
     assert result == "0"
 
@@ -1333,12 +1391,21 @@ def test_nonoverlapping_unrelated_cve_blocks_when_build_vulnerable() -> None:
     """
     existing = [
         _sibling_advisory(
-            "RHLW-X", "g:a", ["CVE-OTHER"], "0", "2.0.0.rhlw-00001",
-            base_version="2.0.0", remediated_version="2.0.0.rhlw-00001",
+            "RHLW-X",
+            "g:a",
+            ["CVE-OTHER"],
+            "0",
+            "2.0.0.rhlw-00001",
+            base_version="2.0.0",
+            remediated_version="2.0.0.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "3.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0",
+        "3.0.0.rhlw-00001",
+        ["CVE-1"],
+        existing,
+        "g:a",
+        "0",
         base_version="3.0.0",
     )
     # Safety rule: 2.0.0.rhlw-00001 doesn't fix CVE-1, keep fallback.
@@ -1349,12 +1416,21 @@ def test_nonoverlapping_preserves_upstream_introduced() -> None:
     """When the build is the lowest and fallback is non-zero, base wins."""
     existing = [
         _sibling_advisory(
-            "RHLW-B", "g:a", ["CVE-1"], "0", "5.0.0.rhlw-00001",
-            base_version="5.0.0", remediated_version="5.0.0.rhlw-00001",
+            "RHLW-B",
+            "g:a",
+            ["CVE-1"],
+            "0",
+            "5.0.0.rhlw-00001",
+            base_version="5.0.0",
+            remediated_version="5.0.0.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "1.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0.9.0",
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        existing,
+        "g:a",
+        "0.9.0",
         base_version="1.0.0",
     )
     assert result == "1.0.0"
@@ -1370,22 +1446,31 @@ def test_nonoverlapping_safety_rule_keeps_fallback() -> None:
     """
     existing = [
         _sibling_advisory(
-            "c782a5bb", "org.yaml:snakeyaml",
-            ["CVE-2022-1471", "CVE-2022-41854"], "0",
+            "c782a5bb",
+            "org.yaml:snakeyaml",
+            ["CVE-2022-1471", "CVE-2022-41854"],
+            "0",
             "1.29.0.rhlw-00021",
-            base_version="1.29.0", remediated_version="1.29.0.rhlw-00021",
+            base_version="1.29.0",
+            remediated_version="1.29.0.rhlw-00021",
         ),
         _sibling_advisory(
-            "c7695b3b", "org.yaml:snakeyaml",
-            ["CVE-2022-41854"], "0",
+            "c7695b3b",
+            "org.yaml:snakeyaml",
+            ["CVE-2022-41854"],
+            "0",
             "1.30.0.rhlw-00013",
-            base_version="1.30.0", remediated_version="1.30.0.rhlw-00013",
+            base_version="1.30.0",
+            remediated_version="1.30.0.rhlw-00013",
         ),
     ]
     # Building 1.33.0 for CVE-2022-1471.
     result = _nonoverlapping_introduced(
-        "1.33.0.rhlw-00001", ["CVE-2022-1471"], existing,
-        "org.yaml:snakeyaml", "0",
+        "1.33.0.rhlw-00001",
+        ["CVE-2022-1471"],
+        existing,
+        "org.yaml:snakeyaml",
+        "0",
         base_version="1.33.0",
     )
     # Must stay at "0" — 1.30.0.rhlw-00013 does not fix CVE-2022-1471.
@@ -1396,13 +1481,21 @@ def test_nonoverlapping_safety_rule_allows_when_all_cves_covered() -> None:
     """Safety rule passes when every excluded build covers all CVEs."""
     existing = [
         _sibling_advisory(
-            "RHLW-A", "g:a", ["CVE-1", "CVE-2"], "0",
+            "RHLW-A",
+            "g:a",
+            ["CVE-1", "CVE-2"],
+            "0",
             "1.0.0.rhlw-00001",
-            base_version="1.0.0", remediated_version="1.0.0.rhlw-00001",
+            base_version="1.0.0",
+            remediated_version="1.0.0.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "2.0.0.rhlw-00001", ["CVE-1", "CVE-2"], existing, "g:a", "0",
+        "2.0.0.rhlw-00001",
+        ["CVE-1", "CVE-2"],
+        existing,
+        "g:a",
+        "0",
         base_version="2.0.0",
     )
     # RHLW-A fixes both CVEs, so excluding it is safe.
@@ -1412,7 +1505,11 @@ def test_nonoverlapping_safety_rule_allows_when_all_cves_covered() -> None:
 def test_nonoverlapping_base_equals_fallback() -> None:
     """When base_version equals fallback_introduced, the result is the same."""
     result = _nonoverlapping_introduced(
-        "1.0.0.rhlw-00001", ["CVE-1"], [], "g:a", "1.0.0",
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        [],
+        "g:a",
+        "1.0.0",
         base_version="1.0.0",
     )
     assert result == "1.0.0"
@@ -1427,12 +1524,21 @@ def test_nonoverlapping_nonzero_fallback_excludes_below() -> None:
     """
     existing = [
         _sibling_advisory(
-            "RHLW-LOW", "g:a", ["CVE-OTHER"], "0", "0.5.0.rhlw-00001",
-            base_version="0.5.0", remediated_version="0.5.0.rhlw-00001",
+            "RHLW-LOW",
+            "g:a",
+            ["CVE-OTHER"],
+            "0",
+            "0.5.0.rhlw-00001",
+            base_version="0.5.0",
+            remediated_version="0.5.0.rhlw-00001",
         ),
     ]
     result = _nonoverlapping_introduced(
-        "1.0.0.rhlw-00001", ["CVE-1"], existing, "g:a", "0.9.0",
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        existing,
+        "g:a",
+        "0.9.0",
         base_version="1.0.0",
     )
     # 0.5.0.rhlw-00001 is below fallback 0.9.0, not in the current
@@ -1444,9 +1550,11 @@ def test_nonoverlapping_nonzero_fallback_excludes_below() -> None:
 # _version_cmp tests — OSGi, mixed formats, edge cases
 # ---------------------------------------------------------------------------
 
+
 def test_version_cmp_basic_maven() -> None:
     """Standard Maven versions compare correctly."""
     from fath_cuan.converters.osv import _version_cmp
+
     assert _version_cmp("1.0.0", "2.0.0") < 0
     assert _version_cmp("1.0.0", "1.0.0") == 0
     assert _version_cmp("2.0.0", "1.0.0") > 0
@@ -1455,6 +1563,7 @@ def test_version_cmp_basic_maven() -> None:
 def test_version_cmp_rhlw_after_base() -> None:
     """A .rhlw- build sorts after its base version."""
     from fath_cuan.converters.osv import _version_cmp
+
     assert _version_cmp("1.0.0.rhlw-00001", "1.0.0") > 0
     assert _version_cmp("1.0.0", "1.0.0.rhlw-00001") < 0
 
@@ -1462,6 +1571,7 @@ def test_version_cmp_rhlw_after_base() -> None:
 def test_version_cmp_rhlw_cross_branch() -> None:
     """rhlw builds on a lower branch sort below a higher base."""
     from fath_cuan.converters.osv import _version_cmp
+
     assert _version_cmp("5.0.3.rhlw-00001", "6.0.3") < 0
     assert _version_cmp("6.0.3.rhlw-00001", "6.2.2") < 0
 
@@ -1469,6 +1579,7 @@ def test_version_cmp_rhlw_cross_branch() -> None:
 def test_version_cmp_osgi_hyphen_rhlw() -> None:
     """OSGi-qualified versions with hyphen rhlw compare correctly."""
     from fath_cuan.converters.osv import _version_cmp
+
     # Base comparison: OSGi base < higher version
     assert _version_cmp("4.1.132.Final-rhlw-00002", "4.2.0") < 0
     # rhlw build > own base
@@ -1480,6 +1591,7 @@ def test_version_cmp_osgi_hyphen_rhlw() -> None:
 def test_version_cmp_osgi_vs_plain() -> None:
     """OSGi-qualified rhlw version vs plain version."""
     from fath_cuan.converters.osv import _version_cmp
+
     assert _version_cmp("3.0.15.RELEASE-rhlw-00003", "3.1.0") < 0
     assert _version_cmp("3.0.15.RELEASE-rhlw-00003", "3.0.15") > 0
 
@@ -1487,6 +1599,7 @@ def test_version_cmp_osgi_vs_plain() -> None:
 def test_version_cmp_pypi_local() -> None:
     """PyPI local versions (X.Y.Z+rhlw.N) compare correctly."""
     from fath_cuan.converters.osv import _version_cmp
+
     assert _version_cmp("7.6.12+rhlw.1", "7.6.12") > 0
     assert _version_cmp("7.6.12+rhlw.1", "7.7.0") < 0
 
@@ -1503,9 +1616,13 @@ def test_advisory_record_uses_nonoverlapping_range(
     pkg = "org.example:artifact"
     mock_lw.return_value = [
         _sibling_advisory(
-            "RHLW-OLDER", pkg, ["CVE-2024-25710"], "0",
+            "RHLW-OLDER",
+            pkg,
+            ["CVE-2024-25710"],
+            "0",
             "0.9.0.rhlw-00001",
-            base_version="0.9.0", remediated_version="0.9.0.rhlw-00001",
+            base_version="0.9.0",
+            remediated_version="0.9.0.rhlw-00001",
         ),
     ]
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
@@ -1530,9 +1647,13 @@ def test_advisory_record_scopes_to_base_when_lowest(
     pkg = "org.example:artifact"
     mock_lw.return_value = [
         _sibling_advisory(
-            "RHLW-HIGHER", pkg, ["CVE-2024-25710"], "0",
+            "RHLW-HIGHER",
+            pkg,
+            ["CVE-2024-25710"],
+            "0",
             "9.0.0.rhlw-00001",
-            base_version="9.0.0", remediated_version="9.0.0.rhlw-00001",
+            base_version="9.0.0",
+            remediated_version="9.0.0.rhlw-00001",
         ),
     ]
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
@@ -1582,9 +1703,13 @@ def test_legacy_record_uses_nonoverlapping_range(
     pkg = "org.example:artifact"
     mock_lw.return_value = [
         _sibling_advisory(
-            "RHLW-OLDER", pkg, ["CVE-2024-25710"], "0",
+            "RHLW-OLDER",
+            pkg,
+            ["CVE-2024-25710"],
+            "0",
             "0.9.0.rhlw-00001",
-            base_version="0.9.0", remediated_version="0.9.0.rhlw-00001",
+            base_version="0.9.0",
+            remediated_version="0.9.0.rhlw-00001",
         ),
     ]
     doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
@@ -1608,9 +1733,13 @@ def test_legacy_record_scopes_to_base_when_lowest(
     pkg = "org.example:artifact"
     mock_lw.return_value = [
         _sibling_advisory(
-            "RHLW-HIGHER", pkg, ["CVE-2024-25710"], "0",
+            "RHLW-HIGHER",
+            pkg,
+            ["CVE-2024-25710"],
+            "0",
             "9.0.0.rhlw-00001",
-            base_version="9.0.0", remediated_version="9.0.0.rhlw-00001",
+            base_version="9.0.0",
+            remediated_version="9.0.0.rhlw-00001",
         ),
     ]
     doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)

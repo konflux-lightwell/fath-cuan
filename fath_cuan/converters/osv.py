@@ -97,9 +97,7 @@ _base_version = maven_base_version
 _OSV_QUERY = "https://api.osv.dev/v1/query"
 
 
-def _fetch_lightwell_advisories(
-    package_name: str, osv_ecosystem: str
-) -> list[dict[str, Any]]:
+def _fetch_lightwell_advisories(package_name: str, osv_ecosystem: str) -> list[dict[str, Any]]:
     """Fetch published Lightwell advisories for a package from osv.dev.
 
     Issues a single POST to the OSV query API scoped to the
@@ -108,9 +106,7 @@ def _fetch_lightwell_advisories(
     on network failure.
     """
     ecosystem = f"Red Hat Lightwell:{osv_ecosystem}"
-    payload = json.dumps(
-        {"package": {"name": package_name, "ecosystem": ecosystem}}
-    ).encode()
+    payload = json.dumps({"package": {"name": package_name, "ecosystem": ecosystem}}).encode()
     req = urllib.request.Request(
         _OSV_QUERY,
         data=payload,
@@ -135,9 +131,7 @@ def _fetch_lightwell_advisories(
             )
             return results  # type: ignore[no-any-return]
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-        logger.debug(
-            "Could not fetch Lightwell advisories for %s", package_name
-        )
+        logger.debug("Could not fetch Lightwell advisories for %s", package_name)
         return []
 
 
@@ -209,10 +203,9 @@ def _nonoverlapping_introduced(
             # [fallback_introduced, current_fixed) but outside the
             # proposed range [base_version, current_fixed)?
             in_current = (
-                (fallback_introduced in ("0", None)
-                 or _version_cmp(remediated, fallback_introduced) >= 0)
-                and _version_cmp(remediated, current_fixed) < 0
-            )
+                fallback_introduced in ("0", None)
+                or _version_cmp(remediated, fallback_introduced) >= 0
+            ) and _version_cmp(remediated, current_fixed) < 0
             in_proposed = (
                 _version_cmp(remediated, base_version) >= 0
                 and _version_cmp(remediated, current_fixed) < 0
@@ -598,7 +591,11 @@ def _affected_entry(
     if cve_ids:
         existing = _fetch_lightwell_advisories(c.name, c.osv_ecosystem)
         introduced = _nonoverlapping_introduced(
-            c.version, cve_ids, existing, c.name, introduced,
+            c.version,
+            cve_ids,
+            existing,
+            c.name,
+            introduced,
             base_version=c.base_version,
         )
     return AffectedEntry(
@@ -869,11 +866,7 @@ class _MvList:
         for i in range(max(len(a), len(b))):
             left = a[i] if i < len(a) else None
             right = b[i] if i < len(b) else None
-            c = (
-                (0 if right is None else -1 * right.cmp(None))
-                if left is None
-                else left.cmp(right)
-            )
+            c = (0 if right is None else -1 * right.cmp(None)) if left is None else left.cmp(right)
             if c != 0:
                 return c
         return 0
@@ -896,14 +889,10 @@ def _parse_maven(version: str) -> _MvList:
     for i in range(n):
         c = version[i]
         if c == ".":
-            cur.add(
-                _MvInt(0) if i == start else _item(is_digit, version[start:i])
-            )
+            cur.add(_MvInt(0) if i == start else _item(is_digit, version[start:i]))
             start = i + 1
         elif c == "-":
-            cur.add(
-                _MvInt(0) if i == start else _item(is_digit, version[start:i])
-            )
+            cur.add(_MvInt(0) if i == start else _item(is_digit, version[start:i]))
             start = i + 1
             new = _MvList()
             cur.add(new)
@@ -1132,11 +1121,13 @@ def _build_advisory_record(
 
         # Avoid overlapping ranges when the same CVE is fixed across
         # multiple version branches of the same package (LWLP-3883).
-        existing = _fetch_lightwell_advisories(
-            mc.name, mc.osv_ecosystem
-        )
+        existing = _fetch_lightwell_advisories(mc.name, mc.osv_ecosystem)
         introduced = _nonoverlapping_introduced(
-            mc.version, cve_ids, existing, mc.name, introduced,
+            mc.version,
+            cve_ids,
+            existing,
+            mc.name,
+            introduced,
             base_version=mc.base_version,
         )
 
