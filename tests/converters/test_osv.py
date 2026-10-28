@@ -128,8 +128,8 @@ def test_fixed_version_is_full_gav_version(mock_osv: object, mock_nvd: object) -
     doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
     results = convert(doc)
     events = results[0].affected[0].ranges[0].events
-    # introduced scoped to base_version (1.0.0), not "0"
-    assert events[0].introduced == "1.0.0"
+    # No siblings → first advisory → keeps fallback "0".
+    assert events[0].introduced == "0"
     assert events[1].fixed == "1.0.0.rhlw-00001"
 
 
@@ -470,7 +470,7 @@ def test_extract_introduced_zero_in_upstream() -> None:
 @patch("fath_cuan.converters.osv._fetch_upstream_osv")
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 def test_introduced_scoped_to_base_despite_upstream(mock_nvd: object, mock_osv: object) -> None:
-    """Upstream introduced is overridden by own base_version scoping."""
+    """No siblings: upstream-derived introduced is preserved as fallback."""
     mock_osv.return_value = {
         "affected": [
             {
@@ -487,19 +487,19 @@ def test_introduced_scoped_to_base_despite_upstream(mock_nvd: object, mock_osv: 
     doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
     results = convert(doc)
     events = results[0].affected[0].ranges[0].events
-    # base_version = 1.0.0 scopes the range to the advisory's own branch
-    assert events[0].introduced == "1.0.0"
+    # No siblings → upstream-derived fallback "0.9.0" is preserved.
+    assert events[0].introduced == "0.9.0"
     assert events[1].fixed == "1.0.0.rhlw-00001"
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_introduced_scoped_to_base_without_upstream(mock_osv: object, mock_nvd: object) -> None:
-    """Without upstream data, introduced is still scoped to base_version."""
+    """Without upstream data and no siblings, introduced falls back to '0'."""
     doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
     results = convert(doc)
     events = results[0].affected[0].ranges[0].events
-    assert events[0].introduced == "1.0.0"
+    assert events[0].introduced == "0"
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +741,8 @@ def test_lw_id_affected_package(mock_jira: object) -> None:
     assert pkg.name == "org.example:artifact"
     assert pkg.purl == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
     events = results[0].affected[0].ranges[0].events
-    assert events[0].introduced == "1.0.0"
+    # No siblings (LW-ID, no upstream OSV) → keeps fallback "0".
+    assert events[0].introduced == "0"
     assert events[1].fixed == "1.0.0.rhlw-00001"
 
 
@@ -1229,7 +1230,7 @@ def _sibling_advisory(
 
 
 def test_nonoverlapping_lowest_keeps_fallback() -> None:
-    """The lowest fixed version keeps the fallback introduced value."""
+    """The lowest branch keeps fallback_introduced (Rule 3)."""
     existing = [
         _sibling_advisory(
             "RHLW-B",
@@ -1249,8 +1250,8 @@ def test_nonoverlapping_lowest_keeps_fallback() -> None:
         "0",
         base_version="1.0.0",
     )
-    # Lowest branch: no sibling builds excluded, scoped to own base.
-    assert result == "1.0.0"
+    # Lowest branch: no sibling builds excluded, keep fallback "0".
+    assert result == "0"
 
 
 def test_nonoverlapping_scopes_to_own_base() -> None:
@@ -1358,7 +1359,7 @@ def test_nonoverlapping_woodstox_scenario() -> None:
 
 
 def test_nonoverlapping_no_siblings() -> None:
-    """No existing advisories returns base_version (no exclusions)."""
+    """No existing advisories (first advisory) keeps fallback_introduced."""
     result = _nonoverlapping_introduced(
         "1.0.0.rhlw-00001",
         ["CVE-1"],
@@ -1367,7 +1368,7 @@ def test_nonoverlapping_no_siblings() -> None:
         "0",
         base_version="1.0.0",
     )
-    assert result == "1.0.0"
+    assert result == "0"
 
 
 def test_nonoverlapping_no_base_version_keeps_fallback() -> None:
@@ -1413,7 +1414,7 @@ def test_nonoverlapping_unrelated_cve_blocks_when_build_vulnerable() -> None:
 
 
 def test_nonoverlapping_preserves_upstream_introduced() -> None:
-    """When the build is the lowest and fallback is non-zero, base wins."""
+    """Lowest branch with non-zero fallback keeps the upstream-derived fallback."""
     existing = [
         _sibling_advisory(
             "RHLW-B",
@@ -1433,7 +1434,8 @@ def test_nonoverlapping_preserves_upstream_introduced() -> None:
         "0.9.0",
         base_version="1.0.0",
     )
-    assert result == "1.0.0"
+    # No excluded builds; lowest branch keeps fallback_introduced "0.9.0".
+    assert result == "0.9.0"
 
 
 def test_nonoverlapping_safety_rule_keeps_fallback() -> None:
@@ -1515,12 +1517,49 @@ def test_nonoverlapping_base_equals_fallback() -> None:
     assert result == "1.0.0"
 
 
+def test_nonoverlapping_ecosystem_guard_ignores_wrong_ecosystem() -> None:
+    """Sibling entries for a different ecosystem are not counted as siblings."""
+    # An advisory whose affected entry names the same package but under a
+    # different Red Hat Lightwell ecosystem (e.g. PyPI vs Maven) must not
+    # be treated as a sibling when computing Maven ranges.
+    adv = {
+        "id": "RHLW-X",
+        "upstream": ["CVE-1"],
+        "affected": [
+            {
+                "package": {
+                    "name": "g:a",
+                    "ecosystem": "Red Hat Lightwell:PyPI",  # wrong ecosystem
+                },
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "0"}, {"fixed": "2.0.0.rhlw-00001"}],
+                    }
+                ],
+                "database_specific": {"lightwell": {"remediated_version": "2.0.0.rhlw-00001"}},
+            }
+        ],
+    }
+    result = _nonoverlapping_introduced(
+        "1.0.0.rhlw-00001",
+        ["CVE-1"],
+        [adv],
+        "g:a",
+        "0",
+        base_version="1.0.0",
+        osv_ecosystem="Maven",
+    )
+    # Wrong-ecosystem sibling is ignored → no pkg_advisories → keep fallback "0".
+    assert result == "0"
+
+
 def test_nonoverlapping_nonzero_fallback_excludes_below() -> None:
     """Builds below fallback_introduced are not treated as excluded.
 
-    C1 fix: if fallback is 0.9.0 and a build at 0.5.0.rhlw-00001
-    exists, it is outside [0.9.0, current_fixed) and must not
-    trigger the safety rule.
+    If fallback is 0.9.0 and a build at 0.5.0.rhlw-00001 exists,
+    it is outside [0.9.0, current_fixed) and does not enter
+    excluded_builds. With no exclusions, fallback_introduced is kept.
     """
     existing = [
         _sibling_advisory(
@@ -1541,9 +1580,9 @@ def test_nonoverlapping_nonzero_fallback_excludes_below() -> None:
         "0.9.0",
         base_version="1.0.0",
     )
-    # 0.5.0.rhlw-00001 is below fallback 0.9.0, not in the current
-    # range, so it is not excluded. Safe to scope to base.
-    assert result == "1.0.0"
+    # 0.5.0.rhlw-00001 is below fallback 0.9.0 — not excluded.
+    # No excluded builds → keep fallback_introduced "0.9.0".
+    assert result == "0.9.0"
 
 
 # ---------------------------------------------------------------------------
@@ -1662,8 +1701,8 @@ def test_advisory_record_scopes_to_base_when_lowest(
     aff = advisory.affected[0]
     events = aff.ranges[0].events
     introduced_ev = next(e for e in events if e.introduced is not None)
-    # Current build is 1.0.0.rhlw-00001, base = 1.0.0
-    assert introduced_ev.introduced == "1.0.0"
+    # Lowest branch (no excluded builds): keeps fallback "0".
+    assert introduced_ev.introduced == "0"
 
 
 @patch("fath_cuan.converters.osv._fetch_lightwell_advisories")
@@ -1674,7 +1713,7 @@ def test_advisory_record_network_failure_scopes_to_base(
     mock_nvd: object,
     mock_lw: object,
 ) -> None:
-    """No siblings returned still scopes to base (no exclusions to check)."""
+    """No siblings returned keeps fallback_introduced (first advisory)."""
     mock_lw.return_value = []
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
     results = convert(doc)
@@ -1682,8 +1721,8 @@ def test_advisory_record_network_failure_scopes_to_base(
     aff = advisory.affected[0]
     events = aff.ranges[0].events
     introduced_ev = next(e for e in events if e.introduced is not None)
-    # base_version = 1.0.0 (from GAV 1.0.0.rhlw-00001)
-    assert introduced_ev.introduced == "1.0.0"
+    # No siblings → first advisory → keep fallback "0".
+    assert introduced_ev.introduced == "0"
 
 
 # ---------------------------------------------------------------------------
@@ -1729,7 +1768,7 @@ def test_legacy_record_scopes_to_base_when_lowest(
     mock_nvd: object,
     mock_lw: object,
 ) -> None:
-    """Per-CVE (legacy) record scopes to base even as the lowest."""
+    """Per-CVE (legacy) record keeps fallback when current build is the lowest."""
     pkg = "org.example:artifact"
     mock_lw.return_value = [
         _sibling_advisory(
@@ -1747,5 +1786,5 @@ def test_legacy_record_scopes_to_base_when_lowest(
     record = results[0]
     events = record.affected[0].ranges[0].events
     introduced_ev = next(e for e in events if e.introduced is not None)
-    # base_version = 1.0.0
-    assert introduced_ev.introduced == "1.0.0"
+    # Lowest branch (9.0.0 sibling is above current, not excluded): keeps fallback "0".
+    assert introduced_ev.introduced == "0"

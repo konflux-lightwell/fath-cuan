@@ -142,6 +142,7 @@ def _nonoverlapping_introduced(
     package_name: str,
     fallback_introduced: str,
     base_version: str | None = None,
+    osv_ecosystem: str = "",
 ) -> str:
     """Compute a non-overlapping ``introduced`` version.
 
@@ -172,15 +173,19 @@ def _nonoverlapping_introduced(
     # Collect all advisories for this package (not just same-CVE
     # siblings). The safety rule must check every remediated build
     # that would drop out of the range, regardless of CVE overlap.
+    pkg_ecosystem = f"Red Hat Lightwell:{osv_ecosystem}" if osv_ecosystem else ""
     pkg_advisories: list[dict[str, Any]] = []
     for adv in existing_advisories:
         for aff in adv.get("affected", []):
-            if aff.get("package", {}).get("name") == package_name:
+            pkg = aff.get("package", {})
+            name_match = pkg.get("name") == package_name
+            eco_match = not pkg_ecosystem or pkg.get("ecosystem") == pkg_ecosystem
+            if name_match and eco_match:
                 pkg_advisories.append(adv)
                 break
 
     if not pkg_advisories:
-        return base_version
+        return fallback_introduced
 
     # Determine which remediated builds would be excluded by
     # raising introduced from fallback to base_version.
@@ -188,7 +193,10 @@ def _nonoverlapping_introduced(
     for adv in pkg_advisories:
         adv_cves = set(adv.get("upstream", []))
         for aff in adv.get("affected", []):
-            if aff.get("package", {}).get("name") != package_name:
+            pkg = aff.get("package", {})
+            if pkg.get("name") != package_name:
+                continue
+            if pkg_ecosystem and pkg.get("ecosystem") != pkg_ecosystem:
                 continue
             lw = (aff.get("database_specific") or {}).get("lightwell") or {}
             remediated = lw.get("remediated_version")
@@ -223,8 +231,8 @@ def _nonoverlapping_introduced(
     excluded_builds = deduped
 
     if not excluded_builds:
-        # No sibling builds excluded — safe to raise.
-        return base_version
+        # No sibling builds excluded — lowest branch keeps fallback (Rule 3).
+        return fallback_introduced
 
     # Safety rule: every excluded build must fix ALL of this
     # advisory's CVEs. Check per-build, not against the union.
@@ -597,6 +605,7 @@ def _affected_entry(
             c.name,
             introduced,
             base_version=c.base_version,
+            osv_ecosystem=c.osv_ecosystem,
         )
     return AffectedEntry(
         package=Package(name=c.name, purl=c.purl, ecosystem=c.osv_ecosystem),
@@ -939,6 +948,13 @@ def _version_cmp(a: str, b: str) -> int:
 
     For PyPI local versions (``X.Y.Z+rhlw.N``), falls back to PEP 440
     via ``packaging.version.Version``.
+
+    Limitation: PEP 440 pre-release forms such as ``1.0.dev1`` are not
+    used in Lightwell builds today. If they appear, ``1.0.dev1`` would
+    sort below ``1.0`` (correct per PEP 440) but only when the ``+``
+    branch is taken; the Maven path would sort them incorrectly.
+    Pass the ecosystem through and select the comparator explicitly if
+    this ever becomes a concern.
     """
     if "+" in a or "+" in b:
         try:
@@ -1129,6 +1145,7 @@ def _build_advisory_record(
             mc.name,
             introduced,
             base_version=mc.base_version,
+            osv_ecosystem=mc.osv_ecosystem,
         )
 
         versions = sorted(set(upstream_versions), key=_version_key) or [mc.base_version]

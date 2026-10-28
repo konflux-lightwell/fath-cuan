@@ -58,8 +58,8 @@ def test_pypi_fixed_version_is_full_local_version(mock_osv: object, mock_nvd: ob
     bi = BuildIndex.from_dict(PYPI_BUILD_INDEX)
     results = convert_build_index(bi)
     events = results[0].affected[0].ranges[0].events
-    # Scoped to own base version
-    assert events[0].introduced == "7.6.12"
+    # No siblings → first advisory → keeps fallback "0".
+    assert events[0].introduced == "0"
     assert events[1].fixed == "7.6.12+rhlw.1"
 
 
@@ -308,6 +308,6 @@ def test_pypi_single_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     assert lw.source is None
     events = r.affected[0].ranges[0].events
     assert len(events) == 2
-    # Scoped to own base version
-    assert events[0].introduced == "7.6.12"
+    # No siblings → first advisory → keeps fallback "0".
+    assert events[0].introduced == "0"
     assert events[1].fixed == "7.6.12+rhlw.1"
