@@ -23,7 +23,7 @@ RUN pip3.12 wheel --wheel-dir=/export/wheels '.[oci]'
 
 
 # Build the final image using task-runner which includes oras and other Tekton tooling
-FROM quay.io/konflux-ci/task-runner:1.5.0
+FROM quay.io/konflux-ci/task-runner:3.3.0
 
 LABEL \
     name="fath-cuan" \
