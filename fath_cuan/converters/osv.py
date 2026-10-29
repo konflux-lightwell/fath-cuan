@@ -68,6 +68,17 @@ _REPOSITORY_URLS: dict[str, str] = {
     ),
 }
 
+_PREDISCLOSURE_URLS: dict[str, str] = {
+    "maven": os.environ.get(
+        "FATH_CUAN_REPOSITORY_URL_MAVEN_PREDISCLOSURE",
+        "https://packages.redhat.com/lightwell/java/predisclosure/",
+    ),
+    "pypi": os.environ.get(
+        "FATH_CUAN_REPOSITORY_URL_PYPI_PREDISCLOSURE",
+        "https://packages.redhat.com/lightwell/python/predisclosure/",
+    ),
+}
+
 _REGISTRY_NAMES: dict[str, str] = {
     "maven": "Maven Central",
     "pypi": "PyPI",
@@ -590,7 +601,9 @@ def _synthesize_details(
     base_version = coord.base_version
     cve_ids = [cid for cid, _ in per_cve_descriptions]
 
-    if len(cve_ids) == 1:
+    if len(cve_ids) == 0:
+        fix_desc = "embargoed security fixes"
+    elif len(cve_ids) == 1:
         fix_desc = "a backported security fix"
     elif len(cve_ids) == 2:
         fix_desc = f"backported fixes for {cve_ids[0]} and {cve_ids[1]}"
@@ -673,12 +686,12 @@ def _build_advisory_record(
         osidb_meta: dict[str, Any] | None = data["osidb_meta"]
         upstream: dict[str, Any] | None = data["upstream"]
         nvd: dict[str, Any] | None = data["nvd"]
-        cve_ids.append(cve_id)
 
         if osidb_meta and osidb_meta.get("embargoed"):
             logger.warning("Skipping embargoed %s in advisory %s", cve_id, advisory_id)
             continue
 
+        cve_ids.append(cve_id)
         upstream_cache[cve_id] = upstream
 
         # Collect GHSA aliases from upstream
@@ -718,7 +731,9 @@ def _build_advisory_record(
                     break
         if not desc and osidb_meta:
             desc = osidb_meta.get("title", "")
-        per_cve_descriptions.append((cve_id, desc))
+        # LW- IDs are embargoed — exclude from advisory details text.
+        if not cve_id.startswith("LW-"):
+            per_cve_descriptions.append((cve_id, desc))
 
         # Public references from upstream (filtered)
         if upstream:
@@ -727,8 +742,9 @@ def _build_advisory_record(
                 if url and _is_public_url(url):
                     ref_type = _classify_advisory_reference(url, r.get("type", "WEB"))
                     all_refs.append(Reference(url=url, type=ref_type))
-        nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
-        all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
+        if cve_id.startswith("CVE-"):
+            nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+            all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
 
         # GHSA advisory references
         if upstream:
@@ -771,14 +787,22 @@ def _build_advisory_record(
                     filtered_ghsa.append(alias)
     ghsa_ids = filtered_ghsa
 
-    # upstream IDs: CVEs first, then GHSAs, deduplicated
-    all_upstream_ids = list(dict.fromkeys(cve_ids + ghsa_ids))
+    # upstream IDs: only public CVEs and GHSAs — LW- IDs are embargoed
+    # and must never appear in a publicly-routable advisory record.
+    public_ids = [cid for cid in cve_ids if not cid.startswith("LW-")]
+    all_upstream_ids = list(dict.fromkeys(public_ids + ghsa_ids))
+
+    # Any LW- presence contaminates the build — predisclosure only.
+    has_lw = any(cid.startswith("LW-") for cid in cve_ids)
 
     # Affected entries: single Red Hat Lightwell ecosystem per package.
     affected: list[AffectedEntry] = []
     for mc in resolved_modules:
         vl_purl = _versionless_purl(mc)
-        repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
+        if has_lw:
+            repo_url = _PREDISCLOSURE_URLS.get(mc.ecosystem, "")
+        else:
+            repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
 
         introduced_versions: list[str] = []
         upstream_versions: list[str] = []
