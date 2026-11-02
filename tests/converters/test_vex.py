@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from fath_cuan.converters.vex import VEXResult, convert, convert_build_index
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
@@ -32,13 +34,14 @@ def _mock_no_enrichment(cve_id, osidb_client=None):
 
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
 def test_convert_build_index_produces_vex(mock_prefetch) -> None:
-    """VEX converter produces per-CVE and multi-CVE documents."""
+    """A single-CVE build produces one per-CVE document and no multi-CVE one."""
     bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
     result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
 
     assert isinstance(result, VEXResult)
     assert len(result.per_cve) == 1
-    assert result.multi_cve is not None
+    # LWLP-4254: a one-statement multi-CVE doc would duplicate the per-CVE doc.
+    assert result.multi_cve is None
 
     cve_id, doc = result.per_cve[0]
     assert cve_id == "CVE-2022-40152"
@@ -145,3 +148,129 @@ def test_vex_advisories_always_include_nvd(mock_prefetch) -> None:
 
     vuln = result.per_cve[0][1]["vulnerabilities"][0]
     assert any("nvd.nist.gov" in a["url"] for a in vuln["advisories"])
+
+
+# ---------------------------------------------------------------------------
+# LWLP-4254: upstream fix via GHSA aliases, no placeholder, CVSS method
+# ---------------------------------------------------------------------------
+
+# Shapes taken from live osv.dev data for CVE-2022-40152: the CVE record
+# has only GIT ranges; the GHSA alias carries the Maven ECOSYSTEM ranges
+# for two upstream branches.
+_CVE_RECORD = {
+    "id": "CVE-2022-40152",
+    "aliases": ["GHSA-3f7h-mf4q-vrm4"],
+    "affected": [{"ranges": [{"type": "GIT", "events": [{"introduced": "0"}]}]}],
+}
+_GHSA_RECORD = {
+    "id": "GHSA-3f7h-mf4q-vrm4",
+    "aliases": ["CVE-2022-40152"],
+    "affected": [
+        {
+            "package": {"ecosystem": "Maven", "name": "com.fasterxml.woodstox:woodstox-core"},
+            "ranges": [
+                {"type": "ECOSYSTEM", "events": [{"introduced": "6.0.0"}, {"fixed": "6.4.0"}]}
+            ],
+        },
+        {
+            "package": {"ecosystem": "Maven", "name": "com.fasterxml.woodstox:woodstox-core"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "5.4.0"}]}],
+        },
+    ],
+}
+
+
+def _fake_fetch(osv_id: str):
+    return {"CVE-2022-40152": _CVE_RECORD, "GHSA-3f7h-mf4q-vrm4": _GHSA_RECORD}.get(osv_id)
+
+
+@patch("fath_cuan.converters.vex._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.vex._fetch_upstream_osv", side_effect=_fake_fetch)
+def test_upstream_fix_follows_ghsa_alias(mock_osv, mock_nvd) -> None:
+    """The fix version comes from the GHSA alias, on the build's branch."""
+    bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
+
+    vuln = result.per_cve[0][1]["vulnerabilities"][0]
+    expected = (
+        "Update to woodstox-core 6.0.3.rhlw-00001 from Red Hat Lightwell "
+        "remediated repository. This version backports the upstream fix "
+        "from woodstox-core 6.4.0."
+    )
+    assert vuln["recommendation"] == expected
+    assert vuln["analysis"]["detail"] == expected
+    fetched = [c.args[0] for c in mock_osv.call_args_list]
+    assert fetched == ["CVE-2022-40152", "GHSA-3f7h-mf4q-vrm4"]
+
+
+def test_extract_upstream_fix_picks_range_containing_base_version() -> None:
+    """Each upstream branch reports its own fix version."""
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    name = "com.fasterxml.woodstox:woodstox-core"
+    records = [_CVE_RECORD, _GHSA_RECORD]
+    assert _extract_upstream_fix(records, "Maven", name, "6.0.3") == (name, "6.4.0")
+    assert _extract_upstream_fix(records, "Maven", name, "5.1.0") == (name, "5.4.0")
+    # Not affected on any listed branch -> no (wrong) fix version.
+    assert _extract_upstream_fix(records, "Maven", name, "7.0.0") == ("", "")
+    # CVE record alone has no ECOSYSTEM ranges.
+    assert _extract_upstream_fix([_CVE_RECORD], "Maven", name, "6.0.3") == ("", "")
+
+
+def test_extract_upstream_fix_prefers_matching_package() -> None:
+    """Ranges for the build's own package win over other packages."""
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    record = {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": "org.other:lib"},
+                "ranges": [
+                    {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.1"}]}
+                ],
+            },
+            {
+                "package": {"ecosystem": "Maven", "name": "org.example:lib"},
+                "ranges": [
+                    {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.5"}]}
+                ],
+            },
+        ]
+    }
+    assert _extract_upstream_fix([record], "Maven", "org.example:lib", "1.0") == (
+        "org.example:lib",
+        "1.5",
+    )
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_no_newer_release_placeholder(mock_prefetch) -> None:
+    """Without an upstream fix version the text is neutral, never a placeholder."""
+    bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
+
+    vuln = result.per_cve[0][1]["vulnerabilities"][0]
+    assert "a newer release" not in vuln["recommendation"]
+    assert "a newer release" not in vuln["analysis"]["detail"]
+    assert vuln["recommendation"].endswith("This version backports the upstream fix.")
+
+
+@pytest.mark.parametrize(
+    ("vector", "method"),
+    [
+        ("CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "CVSSv3"),
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "CVSSv31"),
+        ("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N", "CVSSv4"),
+        ("AV:N/AC:L/Au:N/C:P/I:P/A:P", "CVSSv2"),
+    ],
+)
+def test_cvss_method_matches_vector_version(vector: str, method: str) -> None:
+    """Rating method is derived from the vector version, for OSIDB and NVD."""
+    from fath_cuan.converters.vex import _extract_nvd_score, _extract_osidb_score
+
+    osidb = {"cvss_vectors": [{"type": "CVSS_V3", "score": vector, "numeric_score": 9.8}]}
+    assert _extract_osidb_score(osidb) == (vector, 9.8, method)
+
+    nvd_key = {"CVSSv3": "cvssMetricV30", "CVSSv4": "cvssMetricV40"}.get(method, "cvssMetricV31")
+    nvd = {"metrics": {nvd_key: [{"cvssData": {"vectorString": vector, "baseScore": 9.8}}]}}
+    assert _extract_nvd_score(nvd) == (vector, 9.8, method)

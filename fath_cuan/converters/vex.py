@@ -10,6 +10,7 @@ No cyclonedx-python-lib dependency — models are built directly via Pydantic.
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import logging
 import urllib.parse
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from fath_cuan.converters.osv import (
     _fetch_nvd,
     _fetch_upstream_osv,
     _is_public_url,
+    _version_cmp,
 )
 from fath_cuan.ecosystems import (
     Coordinate,
@@ -45,6 +47,12 @@ logger = logging.getLogger(__name__)
 
 _NVD_DETAIL = "https://nvd.nist.gov/vuln/detail/"
 
+# osv.dev CVE records usually carry only GIT ranges; the Maven/PyPI
+# ECOSYSTEM ranges (with the upstream fix version) live on the GHSA
+# aliases. Cap the alias fan-out per CVE.
+_ALIAS_PREFIXES = ("GHSA-",)
+_MAX_ALIAS_FETCHES = 5
+
 
 @dataclass(frozen=True)
 class VEXResult:
@@ -62,8 +70,31 @@ def _prefetch_enrichment(cve_id: str, osidb_client: OsidbClient | None) -> dict[
         if flaw:
             osidb_meta = extract_osidb_metadata(flaw)
     upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
+    upstream_aliases = _fetch_alias_records(upstream)
     nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
-    return {"osidb_meta": osidb_meta, "upstream": upstream, "nvd": nvd}
+    return {
+        "osidb_meta": osidb_meta,
+        "upstream": upstream,
+        "upstream_aliases": upstream_aliases,
+        "nvd": nvd,
+    }
+
+
+def _fetch_alias_records(upstream: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Fetch the osv.dev records for an upstream record's GHSA aliases."""
+    if not upstream:
+        return []
+    alias_ids = [
+        a
+        for a in dict.fromkeys(upstream.get("aliases") or [])
+        if isinstance(a, str) and a.startswith(_ALIAS_PREFIXES)
+    ][:_MAX_ALIAS_FETCHES]
+    records: list[dict[str, Any]] = []
+    for alias_id in alias_ids:
+        record = _fetch_upstream_osv(alias_id)
+        if record:
+            records.append(record)
+    return records
 
 
 def _build_advisories(upstream: dict[str, Any] | None, cve_id: str) -> list[CdxAdvisory]:
@@ -95,6 +126,20 @@ def _build_advisories(upstream: dict[str, Any] | None, cve_id: str) -> list[CdxA
 # ---------------------------------------------------------------------------
 
 
+def _cvss_method(vector: str) -> str:
+    """Map a CVSS vector to its CycloneDX rating method by version prefix."""
+    if vector.startswith("CVSS:4.0/"):
+        return "CVSSv4"
+    if vector.startswith("CVSS:3.1/"):
+        return "CVSSv31"
+    if vector.startswith("CVSS:3.0/"):
+        return "CVSSv3"
+    if vector.startswith("CVSS:"):
+        return "other"
+    # CVSS v2 vectors carry no version prefix (e.g. "AV:N/AC:L/Au:N/...").
+    return "CVSSv2"
+
+
 def _extract_osidb_score(
     osidb_meta: dict[str, Any],
 ) -> tuple[str, float, str] | None:
@@ -112,8 +157,7 @@ def _extract_osidb_score(
         numeric = cv.get("numeric_score")
         if numeric is None or numeric <= 0:
             return None
-        method = "CVSSv4" if cv.get("type") == "CVSS_V4" else "CVSSv31"
-        return vector, float(numeric), method
+        return vector, float(numeric), _cvss_method(vector)
     return None
 
 
@@ -122,18 +166,13 @@ def _extract_nvd_score(
 ) -> tuple[str, float, str] | None:
     """Extract (vector, baseScore, method) from NVD CVE data."""
     metrics = nvd.get("metrics", {})
-    for v31 in metrics.get("cvssMetricV31", []):
-        data = v31.get("cvssData", {})
-        vector = data.get("vectorString", "")
-        base = data.get("baseScore")
-        if vector and base is not None:
-            return vector, float(base), "CVSSv31"
-    for v40 in metrics.get("cvssMetricV40", []):
-        data = v40.get("cvssData", {})
-        vector = data.get("vectorString", "")
-        base = data.get("baseScore")
-        if vector and base is not None:
-            return vector, float(base), "CVSSv4"
+    for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV40"):
+        for metric in metrics.get(key, []):
+            data = metric.get("cvssData", {})
+            vector = data.get("vectorString", "")
+            base = data.get("baseScore")
+            if vector and base is not None:
+                return vector, float(base), _cvss_method(vector)
     return None
 
 
@@ -223,30 +262,69 @@ def _extract_cwe_ids(osidb_meta: dict[str, Any] | None, nvd: dict[str, Any] | No
 # ---------------------------------------------------------------------------
 
 
+def _ecosystem_fix_ranges(
+    records: list[dict[str, Any]], osv_ecosystem: str
+) -> list[tuple[str, str, str]]:
+    """Collect ``(package_name, introduced, fixed)`` ECOSYSTEM ranges."""
+    out: list[tuple[str, str, str]] = []
+    for record in records:
+        for affected in record.get("affected") or []:
+            pkg = affected.get("package") or {}
+            if pkg.get("ecosystem") != osv_ecosystem:
+                continue
+            name = str(pkg.get("name", ""))
+            for r in affected.get("ranges") or []:
+                if r.get("type") != "ECOSYSTEM":
+                    continue
+                introduced = "0"
+                for event in r.get("events") or []:
+                    if "introduced" in event:
+                        introduced = str(event["introduced"])
+                    elif event.get("fixed"):
+                        out.append((name, introduced, str(event["fixed"])))
+    return out
+
+
+def _in_range(version: str, introduced: str, fixed: str) -> bool:
+    """True when ``introduced <= version < fixed`` (``"0"`` = unbounded)."""
+    lower_ok = introduced == "0" or _version_cmp(introduced, version) <= 0
+    return lower_ok and _version_cmp(version, fixed) < 0
+
+
+def _cmp_fixed(a: tuple[str, str, str], b: tuple[str, str, str]) -> int:
+    return _version_cmp(a[2], b[2])
+
+
 def _extract_upstream_fix(
-    upstream: dict[str, Any] | None,
+    upstream: dict[str, Any] | list[dict[str, Any]] | None,
     osv_ecosystem: str = "Maven",
+    package_name: str = "",
+    base_version: str = "",
 ) -> tuple[str, str]:
     """Extract the upstream package name and fix version from OSV data.
 
-    Returns (upstream_name, fix_version). Falls back to ("", "") when the
-    upstream data has no matching ECOSYSTEM range with a fixed event.
+    *upstream* is the CVE record and/or its alias (GHSA) records. Ranges
+    for *package_name* are preferred over other packages in the same
+    ecosystem. When *base_version* is known, only the range containing it
+    yields a fix version (lowest fix wins) -- a CVE fixed on several
+    upstream branches must not report another branch's fix.
+
+    Returns (upstream_name, fix_version), or ("", "") when nothing matches.
     """
     if not upstream:
         return "", ""
-    for affected in upstream.get("affected", []):
-        pkg = affected.get("package", {})
-        if pkg.get("ecosystem") != osv_ecosystem:
-            continue
-        name = pkg.get("name", "")
-        for r in affected.get("ranges", []):
-            if r.get("type") != "ECOSYSTEM":
-                continue
-            for event in r.get("events", []):
-                fixed = event.get("fixed")
-                if fixed:
-                    return name, str(fixed)
-    return "", ""
+    records = [upstream] if isinstance(upstream, dict) else upstream
+    ranges = _ecosystem_fix_ranges(records, osv_ecosystem)
+    if package_name:
+        named = [r for r in ranges if r[0] == package_name]
+        ranges = named or ranges
+    if base_version:
+        ranges = [r for r in ranges if _in_range(base_version, r[1], r[2])]
+        ranges.sort(key=functools.cmp_to_key(_cmp_fixed))
+    if not ranges:
+        return "", ""
+    name, _, fixed = ranges[0]
+    return name, fixed
 
 
 def _build_recommendation(
@@ -255,14 +333,16 @@ def _build_recommendation(
     upstream_name: str,
     upstream_fix_version: str,
 ) -> str:
-    """Build update recommendation text matching gold standard."""
+    """Build update recommendation text matching gold standard.
+
+    Names the upstream fix version only when it is known; never emits a
+    placeholder version.
+    """
+    lead = f"Update to {artifact_name} {version} from Red Hat Lightwell remediated repository."
+    if not upstream_fix_version:
+        return f"{lead} This version backports the upstream fix."
     fix_name = upstream_name.split(":")[-1] if upstream_name else artifact_name
-    fix_ver = upstream_fix_version or "a newer release"
-    return (
-        f"Update to {artifact_name} {version} from Red Hat Lightwell "
-        f"remediated repository. This version backports the upstream "
-        f"fix from {fix_name} {fix_ver}."
-    )
+    return f"{lead} This version backports the upstream fix from {fix_name} {upstream_fix_version}."
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +403,8 @@ def _build_vulnerability(
     version: str,
     timestamp: str,
     osv_ecosystem: str = "Maven",
+    package_name: str = "",
+    base_version: str = "",
 ) -> CdxVulnerability:
     """Build a single CycloneDX vulnerability entry."""
     osidb_meta = enrichment.get("osidb_meta")
@@ -335,7 +417,12 @@ def _build_vulnerability(
             cve_id,
         )
 
-    upstream_name, upstream_fix_version = _extract_upstream_fix(upstream, osv_ecosystem)
+    fix_records = [r for r in (upstream, *enrichment.get("upstream_aliases", [])) if r]
+    upstream_name, upstream_fix_version = _extract_upstream_fix(
+        fix_records, osv_ecosystem, package_name, base_version
+    )
+    if not upstream_fix_version:
+        logger.info("No upstream fix version found for %s; using neutral wording", cve_id)
     recommendation = _build_recommendation(
         artifact_name, version, upstream_name, upstream_fix_version
     )
@@ -482,6 +569,8 @@ def _build_vex_documents(
             coord.version,
             timestamp,
             osv_ecosystem=osv_eco,
+            package_name=coord.name,
+            base_version=coord.base_version,
         )
         all_vex_vulns.append(vuln)
 
@@ -491,8 +580,10 @@ def _build_vex_documents(
         )
         per_cve_docs.append((cve_id, doc.model_dump(by_alias=True, exclude_none=True)))
 
+    # A multi-CVE document is only meaningful for two or more statements;
+    # with one it would duplicate the per-CVE document.
     multi_cve_doc = None
-    if all_vex_vulns:
+    if len(all_vex_vulns) >= 2:
         multi_doc = CdxVEXDocument(
             serial_number=f"urn:uuid:{uuid4()}",
             vulnerabilities=all_vex_vulns,
