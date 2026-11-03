@@ -111,19 +111,146 @@ def test_convert_legacy_input(mock_prefetch) -> None:
     assert vex_doc["specVersion"] == "1.7"
 
 
+_SERIAL_CORE = "urn:uuid:4048efaf-e166-4041-b19f-6a1b2fec9293"
+_SERIAL_EXTRA = "urn:uuid:9c1d2f3e-0000-4000-8000-000000000002"
+_EXTRA_PURL = "pkg:maven/com.fasterxml.woodstox/woodstox-extra@6.0.3.rhlw-00001"
+
+MULTI_MODULE_BUILD_INDEX = {
+    **SAMPLE_BUILD_INDEX,
+    "purls": [_WOODSTOX_PURL, _EXTRA_PURL],
+}
+
+
+def _affects_serials(doc: dict) -> set[str]:
+    return {a["ref"].split("/", 1)[0] for v in doc["vulnerabilities"] for a in v["affects"]}
+
+
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
-def test_vex_no_metadata_section(mock_prefetch) -> None:
-    """VEX documents must not contain a metadata section."""
+def test_vex_metadata_component_single_module(mock_prefetch) -> None:
+    """A VEX names its module in metadata.component; timestamp matches updated."""
     bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
     result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
 
     _, doc = result.per_cve[0]
-    assert "metadata" not in doc
     assert "components" not in doc
+    assert doc["metadata"]["timestamp"] == doc["vulnerabilities"][0]["updated"]
+    assert doc["metadata"]["component"] == {
+        "type": "library",
+        "bom-ref": _WOODSTOX_PURL,
+        "group": "com.fasterxml.woodstox",
+        "name": "woodstox-core",
+        "version": "6.0.3.rhlw-00001",
+        "purl": _WOODSTOX_PURL,
+    }
+    # Single-module build: the legacy fields are that module's documents.
+    assert len(result.modules) == 1
+    assert result.modules[0].purl == _WOODSTOX_PURL
+    assert result.modules[0].per_cve == result.per_cve
+    assert result.modules[0].multi_cve is None
 
-    if result.multi_cve:
-        assert "metadata" not in result.multi_cve
-        assert "components" not in result.multi_cve
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_metadata_component_uses_sbom_identity(mock_prefetch) -> None:
+    """With the SBOM subject passed in, the VEX purl is byte-identical to it."""
+    full_purl = (
+        f"{_WOODSTOX_PURL}?type=jar"
+        "&repository_url=https://packages.redhat.com/lightwell/java/remediated/"
+    )
+    sbom_component = {
+        "type": "library",
+        "bom-ref": _WOODSTOX_PURL,
+        "group": "com.fasterxml.woodstox",
+        "name": "woodstox-core",
+        "version": "6.0.3.rhlw-00001",
+        "purl": full_purl,
+        "licenses": [{"license": {"id": "Apache-2.0"}}],
+        "hashes": [{"alg": "SHA-256", "content": "00" * 32}],
+        "pedigree": {"ancestors": []},
+    }
+    bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
+    result = convert_build_index(
+        bi,
+        sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS,
+        sbom_components={_WOODSTOX_PURL: sbom_component},
+    )
+
+    component = result.per_cve[0][1]["metadata"]["component"]
+    assert component["purl"] == full_purl
+    assert component["bom-ref"] == _WOODSTOX_PURL
+    # Identity only: SBOM content never leaks into the VEX.
+    assert set(component) == {"type", "bom-ref", "group", "name", "version", "purl"}
+    assert result.modules[0].purl == full_purl
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_one_document_set_per_module(mock_prefetch) -> None:
+    """Each module gets its own VEX referencing only its own SBOM."""
+    bi = BuildIndex.from_dict(MULTI_MODULE_BUILD_INDEX)
+    result = convert_build_index(
+        bi,
+        sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+    )
+
+    assert [m.purl for m in result.modules] == [_WOODSTOX_PURL, _EXTRA_PURL]
+    for module, serial, name in (
+        (result.modules[0], _SERIAL_CORE, "woodstox-core"),
+        (result.modules[1], _SERIAL_EXTRA, "woodstox-extra"),
+    ):
+        assert len(module.per_cve) == 1
+        assert module.multi_cve is None
+        _, doc = module.per_cve[0]
+        assert _affects_serials(doc) == {f"urn:cdx:{serial.removeprefix('urn:uuid:')}"}
+        assert doc["metadata"]["component"]["name"] == name
+        assert doc["metadata"]["component"]["purl"] == module.purl
+        assert f"Update to {name} 6.0.3.rhlw-00001" in doc["vulnerabilities"][0]["recommendation"]
+
+    # Legacy fields keep the build-wide shape for existing callers.
+    _, legacy = result.per_cve[0]
+    assert len(legacy["vulnerabilities"][0]["affects"]) == 2
+    assert "component" not in legacy["metadata"]
+    assert legacy["metadata"]["timestamp"] == "2026-08-06T16:00:00Z"
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_module_without_sbom_serial_is_skipped(mock_prefetch) -> None:
+    """A module with no SBOM to reference gets no per-module VEX."""
+    bi = BuildIndex.from_dict(MULTI_MODULE_BUILD_INDEX)
+    result = convert_build_index(bi, sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE})
+
+    assert [m.purl for m in result.modules] == [_WOODSTOX_PURL]
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_per_module_multi_cve_document(mock_prefetch) -> None:
+    """A module fixing two CVEs gets a multi-CVE document with its metadata."""
+    data = {**MULTI_MODULE_BUILD_INDEX, "vulns": ["CVE-2022-45688", "CVE-2023-5072"]}
+    bi = BuildIndex.from_dict(data)
+    result = convert_build_index(
+        bi,
+        sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+    )
+
+    for module in result.modules:
+        assert [cve for cve, _ in module.per_cve] == ["CVE-2022-45688", "CVE-2023-5072"]
+        assert module.multi_cve is not None
+        assert len(module.multi_cve["vulnerabilities"]) == 2
+        assert module.multi_cve["metadata"]["component"]["purl"] == module.purl
+        assert len(_affects_serials(module.multi_cve)) == 1
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_embargo_stub_has_no_metadata(mock_prefetch) -> None:
+    """Embargo stubs stay minimal: no metadata, no affects."""
+    bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS, embargo=True)
+
+    for docs in (result.per_cve, result.modules[0].per_cve):
+        _, doc = docs[0]
+        assert "metadata" not in doc
+        assert doc["vulnerabilities"][0]["analysis"]["state"] == "in_triage"
+        assert (
+            "affects" not in doc["vulnerabilities"][0] or not doc["vulnerabilities"][0]["affects"]
+        )
 
 
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
