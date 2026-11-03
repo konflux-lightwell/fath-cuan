@@ -291,6 +291,21 @@ def _in_range(version: str, introduced: str, fixed: str) -> bool:
     return lower_ok and _version_cmp(version, fixed) < 0
 
 
+def _same_project(candidate: str, package_name: str) -> bool:
+    """True when *candidate* shares a groupId or artifactId with *package_name*.
+
+    Covers project renames (e.g. ``dom4j:dom4j`` -> ``org.dom4j:dom4j``)
+    while rejecting unrelated packages listed on the same advisory, whose
+    version numbering has nothing to do with the build. Names without a
+    ``:`` (PyPI) only match exactly.
+    """
+    if ":" not in candidate or ":" not in package_name:
+        return candidate == package_name
+    c_group, _, c_artifact = candidate.partition(":")
+    group, _, artifact = package_name.partition(":")
+    return c_group == group or c_artifact == artifact
+
+
 def _cmp_fixed(a: tuple[str, str, str], b: tuple[str, str, str]) -> int:
     return _version_cmp(a[2], b[2])
 
@@ -304,10 +319,12 @@ def _extract_upstream_fix(
     """Extract the upstream package name and fix version from OSV data.
 
     *upstream* is the CVE record and/or its alias (GHSA) records. Ranges
-    for *package_name* are preferred over other packages in the same
-    ecosystem. When *base_version* is known, only the range containing it
-    yields a fix version (lowest fix wins) -- a CVE fixed on several
-    upstream branches must not report another branch's fix.
+    for *package_name* are preferred; otherwise only ranges from the same
+    project (same groupId or artifactId) are considered -- another
+    project's fix version must never be named. When *base_version* is
+    known, only the range containing it yields a fix version (lowest fix
+    wins) -- a CVE fixed on several upstream branches must not report
+    another branch's fix.
 
     Returns (upstream_name, fix_version), or ("", "") when nothing matches.
     """
@@ -317,7 +334,7 @@ def _extract_upstream_fix(
     ranges = _ecosystem_fix_ranges(records, osv_ecosystem)
     if package_name:
         named = [r for r in ranges if r[0] == package_name]
-        ranges = named or ranges
+        ranges = named or [r for r in ranges if _same_project(r[0], package_name)]
     if base_version:
         ranges = [r for r in ranges if _in_range(base_version, r[1], r[2])]
         ranges.sort(key=functools.cmp_to_key(_cmp_fixed))
