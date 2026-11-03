@@ -243,6 +243,52 @@ def test_extract_upstream_fix_prefers_matching_package() -> None:
     )
 
 
+def _single_package_record(name: str, fixed: str) -> dict:
+    return {
+        "affected": [
+            {
+                "package": {"ecosystem": "Maven", "name": name},
+                "ranges": [
+                    {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": fixed}]}
+                ],
+            }
+        ]
+    }
+
+
+def test_extract_upstream_fix_ignores_other_projects() -> None:
+    """Another project's range is never used (CVE-2023-38286 on thymeleaf).
+
+    The GHSA lists only de.codecentric:spring-boot-admin-server; comparing
+    thymeleaf 3.0.15 against its numbering would name the wrong fix.
+    """
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    record = _single_package_record("de.codecentric:spring-boot-admin-server", "3.1.2")
+    assert _extract_upstream_fix([record], "Maven", "org.thymeleaf:thymeleaf", "3.0.15") == (
+        "",
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        "dom4j:dom4j",  # same artifactId (project rename)
+        "org.dom4j:dom4j-core",  # same groupId
+    ],
+)
+def test_extract_upstream_fix_falls_back_within_same_project(listed: str) -> None:
+    """Fallback is allowed when groupId or artifactId matches."""
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    record = _single_package_record(listed, "2.1.3")
+    assert _extract_upstream_fix([record], "Maven", "org.dom4j:dom4j", "2.1.1") == (
+        listed,
+        "2.1.3",
+    )
+
+
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
 def test_no_newer_release_placeholder(mock_prefetch) -> None:
     """Without an upstream fix version the text is neutral, never a placeholder."""
