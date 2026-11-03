@@ -13,7 +13,7 @@ import concurrent.futures
 import functools
 import logging
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -34,11 +34,13 @@ from fath_cuan.models.vex import (
     CdxAdvisory,
     CdxAffects,
     CdxAnalysis,
+    CdxMetadataComponent,
     CdxRating,
     CdxReference,
     CdxSource,
     CdxVersion,
     CdxVEXDocument,
+    CdxVEXMetadata,
     CdxVulnerability,
 )
 from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
@@ -55,11 +57,33 @@ _MAX_ALIAS_FETCHES = 5
 
 
 @dataclass(frozen=True)
+class ModuleVEX:
+    """VEX documents for ONE built module (one SBOM, one VEX per module).
+
+    Every document references only this module's SBOM in ``affects[]`` and
+    names the module in ``metadata.component``. ``multi_cve`` is set only
+    when the module has two or more statements.
+    """
+
+    purl: str
+    per_cve: list[tuple[str, dict[str, Any]]]
+    multi_cve: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
 class VEXResult:
-    """Container for generated VEX documents."""
+    """Container for generated VEX documents.
+
+    ``modules`` holds the per-module documents, one entry per built module
+    with an SBOM to reference. ``per_cve``/``multi_cve`` are kept for
+    existing callers: for a single-module build they are that module's
+    documents; for a multi-module build they keep the build-wide shape
+    (``affects[]`` lists every module, no ``metadata.component``).
+    """
 
     per_cve: list[tuple[str, dict[str, Any]]]
     multi_cve: dict[str, Any] | None
+    modules: list[ModuleVEX] = field(default_factory=list)
 
 
 def _prefetch_enrichment(cve_id: str, osidb_client: OsidbClient | None) -> dict[str, Any]:
@@ -481,49 +505,87 @@ def _build_vulnerability(
 # ---------------------------------------------------------------------------
 
 
-def _build_vex_documents(
-    vulns: list[str],
-    all_coords: list[Coordinate],
-    coord: Coordinate,
+_COMPONENT_IDENTITY_KEYS = ("type", "bom-ref", "group", "name", "version", "purl")
+
+
+def _resolve_sbom_ref(c: Coordinate, sbom_sns: dict[str, str]) -> tuple[str | None, str]:
+    """Find the SBOM serial and bom-ref for a coordinate.
+
+    The serial-numbers map may be keyed by a qualified bom-ref (e.g.
+    ?type=jar from PNC) while c.purl is always bare (from
+    PackageURL.to_string()). Try the exact and bare forms first, then scan
+    for a qualified key that starts with the bare PURL.
+    """
+    bare = c.purl.split("?", 1)[0]
+    sn = sbom_sns.get(c.purl) or sbom_sns.get(bare)
+    if sn:
+        return sn, bare
+    for k, v in sbom_sns.items():
+        if k.split("?", 1)[0] == bare:
+            return v, k
+    return None, bare
+
+
+def _module_component(
+    c: Coordinate,
+    bom_ref: str,
+    sbom_components: dict[str, dict[str, Any]],
+) -> CdxMetadataComponent:
+    """Build ``metadata.component`` for a module.
+
+    Prefers the SBOM subject identity passed by the caller, so the purl is
+    byte-identical to the SBOM's ``metadata.component.purl`` (including
+    qualifiers such as ``repository_url`` that only the caller knows).
+    Falls back to the coordinate.
+    """
+    bare = c.purl.split("?", 1)[0]
+    sbom_comp = next(
+        (sbom_components[k] for k in (bom_ref, c.purl, bare) if k in sbom_components),
+        None,
+    )
+    if sbom_comp:
+        identity = {k: sbom_comp[k] for k in _COMPONENT_IDENTITY_KEYS if sbom_comp.get(k)}
+        identity.setdefault("bom-ref", bom_ref)
+        return CdxMetadataComponent.model_validate(
+            {("bom_ref" if k == "bom-ref" else k): v for k, v in identity.items()}
+        )
+    group, _, name = c.name.rpartition(":")
+    return CdxMetadataComponent(
+        bom_ref=bom_ref,
+        group=group or None,
+        name=name,
+        version=c.version,
+        purl=c.purl,
+    )
+
+
+def _build_doc_set(
+    cve_vulns: list[str],
+    enrichment_data: dict[str, dict[str, Any]],
+    targets: list[tuple[Coordinate, str, str]],
+    text_coord: Coordinate,
     timestamp: str,
-    osidb_client: OsidbClient | None,
-    sbom_serial_numbers: dict[str, str],
-    embargo: bool = False,
-    redact_embargoed: bool = False,
-) -> VEXResult:
-    """Shared core for VEX generation (both build-index and legacy paths)."""
-    if not vulns:
-        return VEXResult(per_cve=[], multi_cve=None)
+    component: CdxMetadataComponent | None,
+    embargo: bool,
+    redact_embargoed: bool,
+) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any] | None]:
+    """Build per-CVE documents and the optional multi-CVE document.
 
-    sbom_sns = sbom_serial_numbers
-    osv_eco = coord.osv_ecosystem
-
-    # Filter out LW- novel-fix identifiers — the identifier itself
-    # is embargo-sensitive and must not appear in VEX documents.
-    cve_vulns = [v for v in dict.fromkeys(vulns) if not v.startswith("LW-")]
-    if len(cve_vulns) < len(set(vulns)):
-        skipped = len(set(vulns)) - len(cve_vulns)
-        logger.info("Skipping %d LW- identifier(s) from VEX generation", skipped)
-
-    if not cve_vulns:
-        return VEXResult(per_cve=[], multi_cve=None)
-
-    # Prefetch enrichment in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            cve_id: pool.submit(_prefetch_enrichment, cve_id, osidb_client) for cve_id in cve_vulns
-        }
-        enrichment_data = {cve_id: fut.result() for cve_id, fut in futures.items()}
-
+    *targets* are the ``(coordinate, sbom_serial, bom_ref)`` entries listed
+    in each statement's ``affects[]``; *text_coord* names the package in
+    the recommendation text and drives the upstream-fix lookup.
+    """
+    metadata = CdxVEXMetadata(timestamp=timestamp, component=component)
     per_cve_docs: list[tuple[str, dict[str, Any]]] = []
     all_vex_vulns: list[CdxVulnerability] = []
-    artifact_name = coord.name.split(":")[-1]
+    artifact_name = text_coord.name.split(":")[-1]
 
     for cve_id in cve_vulns:
         enrichment = enrichment_data[cve_id]
         osidb_meta = enrichment.get("osidb_meta")
 
-        # Embargo handling: emit stub, never full enrichment data.
+        # Embargo handling: emit stub, never full enrichment data. Stubs
+        # carry no metadata, so nothing beyond the CVE ID is disclosed.
         if embargo or (redact_embargoed and osidb_meta and osidb_meta.get("embargoed")):
             stub = _build_embargo_stub(cve_id, timestamp)
             all_vex_vulns.append(stub)
@@ -547,52 +609,30 @@ def _build_vex_documents(
             )
             continue
 
-        # Build affects entries. The serial-numbers map may be keyed
-        # by a qualified bom-ref (e.g. ?type=jar from PNC) while
-        # c.purl is always bare (from PackageURL.to_string()). Try
-        # the bare form first, then scan for a qualified key that
-        # starts with the bare PURL.
-        affects: list[CdxAffects] = []
-        for c in all_coords:
-            bare = c.purl.split("?", 1)[0]
-            sn = sbom_sns.get(c.purl) or sbom_sns.get(bare)
-            bom_ref_key = bare
-            if not sn:
-                # Scan for a qualified key matching this coordinate
-                for k, v in sbom_sns.items():
-                    if k.split("?", 1)[0] == bare:
-                        sn = v
-                        bom_ref_key = k
-                        break
-            if sn:
-                ref = _build_affects_ref(sn, 1, bom_ref_key)
-                affects.append(
-                    CdxAffects(
-                        ref=ref,
-                        versions=[
-                            CdxVersion(
-                                version=c.version,
-                                status="unaffected",
-                            )
-                        ],
-                    )
-                )
+        affects = [
+            CdxAffects(
+                ref=_build_affects_ref(sn, 1, bom_ref),
+                versions=[CdxVersion(version=c.version, status="unaffected")],
+            )
+            for c, sn, bom_ref in targets
+        ]
 
         vuln = _build_vulnerability(
             cve_id,
             enrichment,
             affects,
             artifact_name,
-            coord.version,
+            text_coord.version,
             timestamp,
-            osv_ecosystem=osv_eco,
-            package_name=coord.name,
-            base_version=coord.base_version,
+            osv_ecosystem=text_coord.osv_ecosystem,
+            package_name=text_coord.name,
+            base_version=text_coord.base_version,
         )
         all_vex_vulns.append(vuln)
 
         doc = CdxVEXDocument(
             serial_number=f"urn:uuid:{uuid4()}",
+            metadata=metadata,
             vulnerabilities=[vuln],
         )
         per_cve_docs.append((cve_id, doc.model_dump(by_alias=True, exclude_none=True)))
@@ -603,16 +643,101 @@ def _build_vex_documents(
     if len(all_vex_vulns) >= 2:
         multi_doc = CdxVEXDocument(
             serial_number=f"urn:uuid:{uuid4()}",
+            metadata=metadata,
             vulnerabilities=all_vex_vulns,
         )
         multi_cve_doc = multi_doc.model_dump(by_alias=True, exclude_none=True)
+    return per_cve_docs, multi_cve_doc
+
+
+def _build_vex_documents(
+    vulns: list[str],
+    all_coords: list[Coordinate],
+    coord: Coordinate,
+    timestamp: str,
+    osidb_client: OsidbClient | None,
+    sbom_serial_numbers: dict[str, str],
+    embargo: bool = False,
+    redact_embargoed: bool = False,
+    sbom_components: dict[str, dict[str, Any]] | None = None,
+) -> VEXResult:
+    """Shared core for VEX generation (both build-index and legacy paths)."""
+    if not vulns:
+        return VEXResult(per_cve=[], multi_cve=None)
+
+    sbom_sns = sbom_serial_numbers
+    components = sbom_components or {}
+
+    # Filter out LW- novel-fix identifiers — the identifier itself
+    # is embargo-sensitive and must not appear in VEX documents.
+    cve_vulns = [v for v in dict.fromkeys(vulns) if not v.startswith("LW-")]
+    if len(cve_vulns) < len(set(vulns)):
+        skipped = len(set(vulns)) - len(cve_vulns)
+        logger.info("Skipping %d LW- identifier(s) from VEX generation", skipped)
+
+    if not cve_vulns:
+        return VEXResult(per_cve=[], multi_cve=None)
+
+    # Prefetch enrichment in parallel (once per CVE, shared by all modules)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            cve_id: pool.submit(_prefetch_enrichment, cve_id, osidb_client) for cve_id in cve_vulns
+        }
+        enrichment_data = {cve_id: fut.result() for cve_id, fut in futures.items()}
+
+    targets: list[tuple[Coordinate, str, str]] = []
+    for c in all_coords:
+        sn, bom_ref = _resolve_sbom_ref(c, sbom_sns)
+        if sn:
+            targets.append((c, sn, bom_ref))
+        else:
+            logger.info("No SBOM serial number for %s; no per-module VEX", c.purl)
+
+    # One independent VEX document set per module, referencing only that
+    # module's SBOM and named in metadata.component.
+    modules: list[ModuleVEX] = []
+    for c, sn, bom_ref in targets:
+        component = _module_component(c, bom_ref, components)
+        per_cve, multi = _build_doc_set(
+            cve_vulns,
+            enrichment_data,
+            [(c, sn, bom_ref)],
+            c,
+            timestamp,
+            component,
+            embargo,
+            redact_embargoed,
+        )
+        modules.append(ModuleVEX(purl=component.purl, per_cve=per_cve, multi_cve=multi))
+
+    if len(all_coords) == 1 and modules:
+        per_cve_docs, multi_cve_doc = modules[0].per_cve, modules[0].multi_cve
+    else:
+        # Build-wide shape kept for existing callers: affects[] lists every
+        # module, so metadata.component is set only for a single-module build
+        # (one whose module has no SBOM serial to reference).
+        build_component = None
+        if len(all_coords) == 1:
+            only = all_coords[0]
+            build_component = _module_component(only, only.purl.split("?", 1)[0], components)
+        per_cve_docs, multi_cve_doc = _build_doc_set(
+            cve_vulns,
+            enrichment_data,
+            targets,
+            coord,
+            timestamp,
+            build_component,
+            embargo,
+            redact_embargoed,
+        )
 
     logger.info(
-        "Generated %d per-CVE VEX + %s multi-CVE VEX",
+        "Generated %d per-CVE VEX + %s multi-CVE VEX; %d module(s)",
         len(per_cve_docs),
         "1" if multi_cve_doc else "0",
+        len(modules),
     )
-    return VEXResult(per_cve=per_cve_docs, multi_cve=multi_cve_doc)
+    return VEXResult(per_cve=per_cve_docs, multi_cve=multi_cve_doc, modules=modules)
 
 
 # ---------------------------------------------------------------------------
@@ -626,8 +751,14 @@ def convert_build_index(
     sbom_serial_numbers: dict[str, str] | None = None,
     embargo: bool = False,
     redact_embargoed: bool = False,
+    sbom_components: dict[str, dict[str, Any]] | None = None,
 ) -> VEXResult:
-    """Generate VEX documents from a build-index."""
+    """Generate VEX documents from a build-index.
+
+    *sbom_components* optionally maps the same keys as
+    *sbom_serial_numbers* to each SBOM's ``metadata.component``; its
+    identity fields become the VEX ``metadata.component``.
+    """
     coord = coordinate_from_purl(
         bi.primary_purl,
         ecosystem=bi.ecosystem,
@@ -661,6 +792,7 @@ def convert_build_index(
         sbom_serial_numbers or {},
         embargo=embargo,
         redact_embargoed=redact_embargoed,
+        sbom_components=sbom_components,
     )
 
 
@@ -670,6 +802,7 @@ def convert(
     sbom_serial_numbers: dict[str, str] | None = None,
     embargo: bool = False,
     redact_embargoed: bool = False,
+    sbom_components: dict[str, dict[str, Any]] | None = None,
 ) -> VEXResult:
     """Generate VEX documents from a legacy PNC InputDocument."""
     coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
@@ -694,4 +827,5 @@ def convert(
         sbom_serial_numbers or {},
         embargo=embargo,
         redact_embargoed=redact_embargoed,
+        sbom_components=sbom_components,
     )

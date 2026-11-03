@@ -70,13 +70,15 @@ def process_vex(
     sbom_serial_numbers: dict[str, str] | None = None,
     embargo: bool = False,
     redact_embargoed: bool = False,
+    sbom_components: dict[str, dict[str, Any]] | None = None,
 ) -> VEXResult:
     """Generate CycloneDX 1.7 VEX documents from input JSON.
 
     Dispatches to build-index or legacy gav-index path. Returns a
     VEXResult with per-CVE and multi-CVE documents.
 
-    Production SBOM cross-referencing (sbom_serial_numbers) is wired
+    Production SBOM cross-referencing (sbom_serial_numbers, and
+    optionally sbom_components for the VEX metadata.component) is wired
     by slan-cuan, not the CLI.
     """
     if _is_build_index(input_json):
@@ -91,6 +93,7 @@ def process_vex(
             sbom_serial_numbers=sbom_serial_numbers,
             embargo=embargo,
             redact_embargoed=redact_embargoed,
+            sbom_components=sbom_components,
         )
 
     logger.info(
@@ -104,4 +107,5 @@ def process_vex(
         sbom_serial_numbers=sbom_serial_numbers,
         embargo=embargo,
         redact_embargoed=redact_embargoed,
+        sbom_components=sbom_components,
     )

@@ -89,8 +89,30 @@ class CdxVulnerability(BaseModel):
     updated: str = ""
 
 
+class CdxMetadataComponent(BaseModel):
+    """Identity of the module a VEX document is about (``metadata.component``).
+
+    Identity fields only, mirroring the SBOM subject so the purl is
+    byte-identical; licenses, hashes and pedigree stay in the SBOM.
+    """
+
+    type: str = "library"
+    bom_ref: str = Field(serialization_alias="bom-ref")
+    group: str | None = None
+    name: str
+    version: str
+    purl: str
+
+
+class CdxVEXMetadata(BaseModel):
+    """VEX ``metadata``: release timestamp and the module described."""
+
+    timestamp: str
+    component: CdxMetadataComponent | None = None
+
+
 class CdxVEXDocument(BaseModel):
-    """CycloneDX 1.7 VEX document (no components)."""
+    """CycloneDX 1.7 VEX document (no components; ``metadata.component`` names the module)."""
 
     bom_format: str = Field(
         default="CycloneDX",
@@ -104,6 +126,7 @@ class CdxVEXDocument(BaseModel):
         serialization_alias="serialNumber",
     )
     version: int = 1
+    metadata: CdxVEXMetadata | None = None
     vulnerabilities: list[CdxVulnerability] = Field(
         default_factory=list,
     )
