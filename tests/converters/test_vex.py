@@ -184,6 +184,57 @@ def test_vex_metadata_component_uses_sbom_identity(mock_prefetch) -> None:
 
 
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_matches_pnc_sbom_components0(mock_prefetch) -> None:
+    """PNC SBOMs carry the subject in components[0] with a ?type=jar bom-ref.
+
+    The BOM-Link uses that exact bom-ref and the VEX metadata.component copies
+    the canonical purl (qualifiers sorted: repository_url before type).
+    """
+    purl = "pkg:maven/org.jsoup/jsoup@1.22.1.rhlw-00002"
+    bom_ref = f"{purl}?type=jar"
+    canonical = (
+        f"{purl}?repository_url=https://packages.redhat.com/lightwell/java/remediated/&type=jar"
+    )
+    pnc_components0 = {
+        "bom-ref": bom_ref,
+        "group": "org.jsoup",
+        "name": "jsoup",
+        "purl": canonical,
+        "type": "library",
+        "version": "1.22.1.rhlw-00002",
+        "hashes": [{"alg": "SHA-256", "content": "c8" * 32}],
+        "licenses": [{"license": {"id": "MIT"}}],
+    }
+    serial = "urn:uuid:c1573583-6884-55df-b85f-b2691dcd2ec4"
+    data = {
+        **SAMPLE_BUILD_INDEX,
+        "version": {"upstream": "1.22.1", "full": "1.22.1.rhlw-00002", "b": 1, "n": 0},
+        "primaryPurl": purl,
+        "purls": [purl],
+    }
+    bi = BuildIndex.from_dict(data)
+    result = convert_build_index(
+        bi,
+        sbom_serial_numbers={bom_ref: serial},
+        sbom_components={bom_ref: pnc_components0},
+    )
+
+    _, doc = result.modules[0].per_cve[0]
+    assert doc["vulnerabilities"][0]["affects"][0]["ref"] == (
+        "urn:cdx:c1573583-6884-55df-b85f-b2691dcd2ec4/1#"
+        "pkg%3Amaven%2Forg.jsoup%2Fjsoup%401.22.1.rhlw-00002%3Ftype%3Djar"
+    )
+    assert doc["metadata"]["component"] == {
+        "type": "library",
+        "bom-ref": bom_ref,
+        "group": "org.jsoup",
+        "name": "jsoup",
+        "version": "1.22.1.rhlw-00002",
+        "purl": canonical,
+    }
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
 def test_vex_one_document_set_per_module(mock_prefetch) -> None:
     """Each module gets its own VEX referencing only its own SBOM."""
     bi = BuildIndex.from_dict(MULTI_MODULE_BUILD_INDEX)

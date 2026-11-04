@@ -588,10 +588,11 @@ def _module_component(
 ) -> CdxMetadataComponent:
     """Build ``metadata.component`` for a module.
 
-    Prefers the SBOM subject identity passed by the caller, so the purl is
-    byte-identical to the SBOM's ``metadata.component.purl`` (including
-    qualifiers such as ``repository_url`` that only the caller knows).
-    Falls back to the coordinate.
+    Prefers the SBOM subject identity passed by the caller (the SBOM's
+    ``components[0]``, the shape PNC produces), so the purl is
+    byte-identical to the SBOM's (including qualifiers such as
+    ``repository_url`` that only the caller knows). Falls back to the
+    coordinate.
     """
     bare = c.purl.split("?", 1)[0]
     sbom_comp = next(
@@ -811,8 +812,8 @@ def convert_build_index(
     """Generate VEX documents from a build-index.
 
     *sbom_components* optionally maps the same keys as
-    *sbom_serial_numbers* to each SBOM's ``metadata.component``; its
-    identity fields become the VEX ``metadata.component``.
+    *sbom_serial_numbers* to each SBOM's subject (its ``components[0]``);
+    its identity fields become the VEX ``metadata.component``.
     """
     coord = coordinate_from_purl(
         bi.primary_purl,
