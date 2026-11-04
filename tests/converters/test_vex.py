@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -251,6 +252,70 @@ def test_vex_embargo_stub_has_no_metadata(mock_prefetch) -> None:
         assert (
             "affects" not in doc["vulnerabilities"][0] or not doc["vulnerabilities"][0]["affects"]
         )
+
+
+_LW_ID = "LW-2026-0042"
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_keeps_lw_ids_with_public_cves(mock_prefetch) -> None:
+    """A build fixing an LW- issue and a CVE states both: no silent fix."""
+    data = {**SAMPLE_BUILD_INDEX, "vulns": [_LW_ID, "CVE-2022-40152"]}
+    bi = BuildIndex.from_dict(data)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
+
+    assert [cve for cve, _ in result.per_cve] == [_LW_ID, "CVE-2022-40152"]
+    assert result.multi_cve is not None
+    assert {v["id"] for v in result.multi_cve["vulnerabilities"]} == {_LW_ID, "CVE-2022-40152"}
+    assert result.modules[0].per_cve == result.per_cve
+
+    _, lw_doc = result.per_cve[0]
+    lw = lw_doc["vulnerabilities"][0]
+    assert lw["source"] == {"name": "Red Hat Lightwell"}
+    assert lw["analysis"]["state"] == "resolved"
+    assert lw["affects"][0]["ref"].startswith("urn:cdx:4048efaf-")
+    assert f"Red Hat Lightwell fix for {_LW_ID}" in lw["recommendation"]
+    assert "backports" not in lw["recommendation"]
+    # No NVD record exists for an LW- ID.
+    assert "nvd.nist.gov" not in json.dumps(lw_doc)
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_lw_only_build_produces_vex(mock_prefetch) -> None:
+    """A build with only LW- fixes still produces VEX for them."""
+    data = {**SAMPLE_BUILD_INDEX, "vulns": [_LW_ID]}
+    bi = BuildIndex.from_dict(data)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
+
+    assert [cve for cve, _ in result.per_cve] == [_LW_ID]
+    assert result.multi_cve is None
+
+
+def _mock_osidb_embargoed(cve_id, osidb_client=None):
+    return {"osidb_meta": {"embargoed": True}, "upstream": None, "nvd": None}
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_osidb_embargoed)
+def test_vex_lw_not_dropped_when_osidb_embargoed(mock_prefetch) -> None:
+    """LW- statements are never dropped because OSIDB marks them embargoed."""
+    data = {**SAMPLE_BUILD_INDEX, "vulns": [_LW_ID]}
+    bi = BuildIndex.from_dict(data)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
+
+    assert [cve for cve, _ in result.per_cve] == [_LW_ID]
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_lw_embargo_stub_uses_lightwell_source(mock_prefetch) -> None:
+    """An LW- embargo stub names Red Hat Lightwell, not NVD."""
+    data = {**SAMPLE_BUILD_INDEX, "vulns": [_LW_ID]}
+    bi = BuildIndex.from_dict(data)
+    result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS, embargo=True)
+
+    stub = result.per_cve[0][1]["vulnerabilities"][0]
+    assert stub["id"] == _LW_ID
+    assert stub["source"] == {"name": "Red Hat Lightwell"}
+    assert stub["analysis"]["state"] == "in_triage"
 
 
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
