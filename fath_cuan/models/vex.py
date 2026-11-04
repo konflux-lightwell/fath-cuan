@@ -92,7 +92,7 @@ class CdxVulnerability(BaseModel):
 class CdxMetadataComponent(BaseModel):
     """Identity of the module a VEX document is about (``metadata.component``).
 
-    Identity fields only, mirroring the SBOM subject so the purl is
+    Identity fields only, mirroring the SBOM subject (its ``components[0]``) so the purl is
     byte-identical; licenses, hashes and pedigree stay in the SBOM.
     """
 
