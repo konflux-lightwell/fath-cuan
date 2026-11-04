@@ -49,6 +49,17 @@ logger = logging.getLogger(__name__)
 
 _NVD_DETAIL = "https://nvd.nist.gov/vuln/detail/"
 
+# Lightwell novel-fix identifiers (embargoed until a CVE is assigned). They
+# are kept in VEX so slan-cuan routes the whole build to predisclosure
+# repositories (or fails closed); dropping them would publish a silent fix.
+_LW_PREFIX = "LW-"
+_LIGHTWELL_SOURCE = CdxSource(name="Red Hat Lightwell")
+
+
+def _is_lw(vuln_id: str) -> bool:
+    return vuln_id.startswith(_LW_PREFIX)
+
+
 # osv.dev CVE records usually carry only GIT ranges; the Maven/PyPI
 # ECOSYSTEM ranges (with the upstream fix version) live on the GHSA
 # aliases. Cap the alias fan-out per CVE.
@@ -424,7 +435,11 @@ def _build_embargo_stub(
     return CdxVulnerability(
         bom_ref=str(uuid4()),
         id=cve_id,
-        source=CdxSource(name="NVD", url=f"{_NVD_DETAIL}{cve_id}"),
+        source=(
+            _LIGHTWELL_SOURCE
+            if _is_lw(cve_id)
+            else CdxSource(name="NVD", url=f"{_NVD_DETAIL}{cve_id}")
+        ),
         analysis=_EMBARGO_ANALYSIS,
         published=timestamp,
         updated=timestamp,
@@ -434,6 +449,41 @@ def _build_embargo_stub(
 # ---------------------------------------------------------------------------
 # Vulnerability builder
 # ---------------------------------------------------------------------------
+
+
+def _build_lw_vulnerability(
+    lw_id: str,
+    osidb_meta: dict[str, Any] | None,
+    affects_entries: list[CdxAffects],
+    artifact_name: str,
+    version: str,
+    timestamp: str,
+) -> CdxVulnerability:
+    """Build the VEX entry for a Lightwell novel fix (``LW-`` identifier).
+
+    There is no NVD record and no upstream fix to name, so the entry carries
+    the Lightwell source, OSIDB ratings when available, and neutral wording.
+    """
+    recommendation = (
+        f"Update to {artifact_name} {version} from Red Hat Lightwell "
+        f"remediated repository. This version contains the Red Hat Lightwell "
+        f"fix for {lw_id}."
+    )
+    return CdxVulnerability(
+        bom_ref=str(uuid4()),
+        id=lw_id,
+        source=_LIGHTWELL_SOURCE,
+        analysis=CdxAnalysis(
+            state="resolved",
+            response=["update"],
+            detail=recommendation,
+        ),
+        affects=affects_entries,
+        ratings=_build_ratings(osidb_meta, None),
+        recommendation=recommendation,
+        published=timestamp,
+        updated=timestamp,
+    )
 
 
 def _build_vulnerability(
@@ -451,6 +501,11 @@ def _build_vulnerability(
     osidb_meta = enrichment.get("osidb_meta")
     upstream = enrichment.get("upstream")
     nvd = enrichment.get("nvd")
+
+    if _is_lw(cve_id):
+        return _build_lw_vulnerability(
+            cve_id, osidb_meta, affects_entries, artifact_name, version, timestamp
+        )
 
     if not osidb_meta and not upstream and not nvd:
         logger.warning(
@@ -601,8 +656,9 @@ def _build_doc_set(
             )
             continue
 
-        # Non-embargoed but OSIDB says embargoed: drop entirely.
-        if osidb_meta and osidb_meta.get("embargoed"):
+        # Non-embargoed but OSIDB says embargoed: drop entirely. LW- IDs are
+        # embargoed by definition and are never dropped (see _LW_PREFIX).
+        if osidb_meta and osidb_meta.get("embargoed") and not _is_lw(cve_id):
             logger.warning(
                 "Dropping embargoed %s from VEX (not in redact mode)",
                 cve_id,
@@ -668,15 +724,14 @@ def _build_vex_documents(
     sbom_sns = sbom_serial_numbers
     components = sbom_components or {}
 
-    # Filter out LW- novel-fix identifiers — the identifier itself
-    # is embargo-sensitive and must not appear in VEX documents.
-    cve_vulns = [v for v in dict.fromkeys(vulns) if not v.startswith("LW-")]
-    if len(cve_vulns) < len(set(vulns)):
-        skipped = len(set(vulns)) - len(cve_vulns)
-        logger.info("Skipping %d LW- identifier(s) from VEX generation", skipped)
-
-    if not cve_vulns:
-        return VEXResult(per_cve=[], multi_cve=None)
+    # LW- novel-fix identifiers stay in the VEX: slan-cuan routes any VEX
+    # carrying them to predisclosure repositories, or fails closed. Dropping
+    # them would leave a CVE-only VEX for a build that also carries an
+    # embargoed fix, i.e. a silent fix.
+    cve_vulns = list(dict.fromkeys(vulns))
+    lw_count = sum(1 for v in cve_vulns if _is_lw(v))
+    if lw_count:
+        logger.info("Including %d LW- identifier(s) in VEX (predisclosure only)", lw_count)
 
     # Prefetch enrichment in parallel (once per CVE, shared by all modules)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
