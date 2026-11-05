@@ -903,7 +903,7 @@ def test_single_cve_new_format(mock_osv: object, mock_nvd: object) -> None:
     assert len(results) == 2
     r = results[0]
     assert r.id == "RHLW-2026-5fc0229c48c1b99c"
-    assert r.schema_version == "1.9.0"
+    assert r.schema_version == "1.9.2"
     assert r.upstream == ["CVE-2024-25710"]
     assert r.aliases is None
     assert len(r.affected) == 1
@@ -1124,7 +1124,7 @@ def test_unresolvable_cve_excluded(mock_nvd: object, mock_osv: object) -> None:
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_advisory_record_conforms_to_osv_schema(mock_osv: object, mock_nvd: object) -> None:
-    """Output dict validates against the OSV 1.9.0 JSON schema structure."""
+    """Output dict validates against the OSV 1.9.2 JSON schema structure."""
     import jsonschema
 
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
