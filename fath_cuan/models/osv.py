@@ -65,8 +65,14 @@ class AffectedEntry(BaseModel):
     database_specific: DatabaseSpecific | None = None
 
 
+# The "Red Hat Lightwell" ecosystem was added to the OSV schema in v1.9.1
+# (ossf/osv-schema#571). Records must declare a version that includes it, or
+# consumers that validate against the declared version reject them.
+OSV_SCHEMA_VERSION = "1.9.2"
+
+
 class OSVDocument(BaseModel):
-    schema_version: str = "1.9.0"
+    schema_version: str = OSV_SCHEMA_VERSION
     id: str
     published: str | None = None
     modified: str

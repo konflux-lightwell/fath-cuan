@@ -185,7 +185,7 @@ Options:
 
 ### Output
 
-**OSV format** (`--format osv`): Generates one JSON file per vulnerability ID listed in the input's `vulns` array — both CVEs (`CVE-…`) and Lightwell novel IDs (`LW-…`). Each file follows the [OSV 1.6.8 schema](https://ossf.github.io/osv-schema/) and matches the format published by balor-fianna to the Lightwell Pulp OSV repository.
+**OSV format** (`--format osv`): Generates one JSON file per vulnerability ID listed in the input's `vulns` array — both CVEs (`CVE-…`) and Lightwell novel IDs (`LW-…`). Each file follows the [OSV 1.9.2 schema](https://ossf.github.io/osv-schema/) and matches the format published by balor-fianna to the Lightwell Pulp OSV repository.
 
 Output filenames follow the pattern: `x_RHLW-{VULN_ID}-{base_version}.json`
 
@@ -202,7 +202,7 @@ Wrote output/osv/x_RHLW-CVE-2024-26308-4.0.4.json
 # Generate to stdout (single CVE)
 $ fath-cuan process gav-index.json --format osv --stdout
 {
-  "schema_version": "1.6.8",
+  "schema_version": "1.9.2",
   "id": "x_RHLW-CVE-2024-25710-4.0.4",
   ...
 }
@@ -257,7 +257,7 @@ Each generated OSV record contains:
 | Field | Source |
 |-------|--------|
 | `id` | `x_RHLW-{VULN_ID}-{base_version}` (VULN_ID = CVE or `LW-…`) |
-| `schema_version` | `1.6.8` |
+| `schema_version` | `1.9.2` |
 | `modified` / `published` | From input `created` timestamp |
 | `severity` | CVSS vector — from OSIDB, else osv.dev/NVD (CVEs), else JIRA (novels). May be empty when no CVSS exists (e.g., novels with a qualitative `impact` only). |
 | `summary` | OSIDB flaw title → osv.dev/NVD → JIRA ticket title |
