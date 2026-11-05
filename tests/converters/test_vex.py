@@ -66,6 +66,20 @@ def test_convert_build_index_produces_vex(mock_prefetch) -> None:
 
 
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_lw_list_produces_no_vex(mock_prefetch) -> None:
+    """An LW- id suppresses VEX for the whole build, including CVE ids."""
+    pure = BuildIndex.from_dict({**SAMPLE_BUILD_INDEX, "vulns": ["LW-2026-0001"]})
+    mixed = BuildIndex.from_dict(
+        {**SAMPLE_BUILD_INDEX, "vulns": ["CVE-2022-40152", "LW-2026-0001"]}
+    )
+    for bi in (pure, mixed):
+        result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS)
+        assert result.per_cve == []
+        assert result.multi_cve is None
+    mock_prefetch.assert_not_called()
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
 def test_convert_build_index_no_vulns(mock_prefetch) -> None:
     """Build-index with no vulns produces empty VEX result."""
     data = {**SAMPLE_BUILD_INDEX, "vulns": []}

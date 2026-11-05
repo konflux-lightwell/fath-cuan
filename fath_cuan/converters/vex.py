@@ -391,18 +391,17 @@ def _build_vex_documents(
     if not vulns:
         return VEXResult(per_cve=[], multi_cve=None)
 
+    # An LW- id marks the whole build as predisclosure. Produce no VEX
+    # documents, including for CVE ids in the same list. A later change
+    # may publish VEX to the predisclosure repository only.
+    if any(vuln_id.startswith("LW-") for vuln_id in vulns):
+        logger.info("Skipping VEX generation: vulnerability list contains an LW- id")
+        return VEXResult(per_cve=[], multi_cve=None)
+
     sbom_sns = sbom_serial_numbers
     osv_eco = coord.osv_ecosystem
 
-    # Filter out LW- novel-fix identifiers — the identifier itself
-    # is embargo-sensitive and must not appear in VEX documents.
-    cve_vulns = [v for v in dict.fromkeys(vulns) if not v.startswith("LW-")]
-    if len(cve_vulns) < len(set(vulns)):
-        skipped = len(set(vulns)) - len(cve_vulns)
-        logger.info("Skipping %d LW- identifier(s) from VEX generation", skipped)
-
-    if not cve_vulns:
-        return VEXResult(per_cve=[], multi_cve=None)
+    cve_vulns = list(dict.fromkeys(vulns))
 
     # Prefetch enrichment in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
