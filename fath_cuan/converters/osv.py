@@ -1323,6 +1323,16 @@ def convert_build_index(
     )
 
 
+def _contains_lw_id(vuln_ids: list[str]) -> bool:
+    """Return True when the vulnerability list contains an embargoed LW- id.
+
+    An ``LW-`` id marks the whole build as predisclosure. The public OSV
+    advisory is produced later, from a separate build whose list has no
+    ``LW-`` id.
+    """
+    return any(vuln_id.startswith("LW-") for vuln_id in vuln_ids)
+
+
 def _build_records(
     coord: Coordinate,
     vulns: list[str],
@@ -1336,6 +1346,11 @@ def _build_records(
 ) -> list[OSVDocument]:
     """Build OSV records for a resolved coordinate and vulnerability list.
 
+    A list that contains any ``LW-`` id produces no OSV records. That
+    includes a pure ``LW-`` list and a mixed CVE plus ``LW-`` list.
+    ``embargo`` and ``redact_embargoed`` do not override this skip: a
+    stub id would still carry the ``LW-`` id.
+
     When ``advisory_id`` is set and neither ``embargo`` nor
     ``redact_embargoed`` is active, the new per-release path produces a
     single record for all CVEs. Otherwise the legacy per-CVE loop runs.
@@ -1345,6 +1360,13 @@ def _build_records(
     base_ver = coord.base_version
     osv_ecosystem = coord.osv_ecosystem
     logger.debug("Converting %s (%s) with %d vulns", coordinates, version, len(vulns))
+
+    if _contains_lw_id(vulns):
+        logger.warning(
+            "Skipping OSV advisories for %s: vulnerability list contains an LW- id",
+            coordinates,
+        )
+        return []
 
     created_utc = created if created.tzinfo else created.replace(tzinfo=UTC)
     published = created_utc.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

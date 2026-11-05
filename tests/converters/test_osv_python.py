@@ -181,17 +181,13 @@ OSIDB_NOVEL = {
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_pypi_novel_enriched_from_osidb(mock_osv: object, mock_nvd: object) -> None:
+    """A PyPI build whose vulnerability list contains an LW- id produces no OSV records."""
     client = OsidbClient(base_url="https://example.com", token="fake")
     bi = BuildIndex.from_dict({**PYPI_BUILD_INDEX, "vulns": ["LW-2099-0001"]})
-    with patch.object(client, "_get", return_value=OSIDB_NOVEL):
+    with patch.object(client, "_get", return_value=OSIDB_NOVEL) as mock_get:
         results = convert_build_index(bi, osidb_client=client)
-    r = results[0]
-    assert r.summary == "Example novel flaw in a Python package"
-    assert r.severity[0].type == "CVSS_V3"
-    assert r.database_specific.lightwell.lw_id == "LW-2099-0001"
-    assert r.database_specific.lightwell.source == "novel-pipeline"
-    assert r.affected[0].package.purl == "pkg:pypi/coverage@7.6.12%2Brhlw.1"
-    assert r.affected[0].package.ecosystem == "PyPI"
+    assert results == []
+    mock_get.assert_not_called()
     mock_osv.assert_not_called()
 
 

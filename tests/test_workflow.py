@@ -43,11 +43,12 @@ def test_process_osv_excludes_none_values(mock_osv: object, mock_nvd: object) ->
 
 
 @patch("fath_cuan.converters.osv._fetch_jira")
-def test_process_osv_passes_jira_client(mock_jira: MagicMock) -> None:
-    mock_jira.return_value = None
+def test_process_osv_skips_lw_list(mock_jira: MagicMock) -> None:
+    """An LW- list produces no OSV records and does not call JIRA."""
     client = JiraClient()
-    process_osv(SAMPLE_LW_VULN_DATA, jira_client=client)
-    mock_jira.assert_called_once_with("LW-2026-0468", client)
+    result = process_osv(SAMPLE_LW_VULN_DATA, jira_client=client)
+    assert result == []
+    mock_jira.assert_not_called()
 
 
 _NO_ENRICHMENT = {

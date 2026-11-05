@@ -130,6 +130,7 @@ _OSIDB_NOVEL = {
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_novel_resolves_from_osidb_components(mock_osv: object, mock_nvd: object) -> None:
+    """An LW- gav-index produces no OSV record, so OSIDB components are not published."""
     client = OsidbClient(base_url="https://example.com", token="fake")
     data = {
         "buildId": "B3",
@@ -141,10 +142,10 @@ def test_novel_resolves_from_osidb_components(mock_osv: object, mock_nvd: object
             "com.squareup.okio:okio:1.17.2.rhlw-00001",
         ],
     }
-    with patch.object(client, "_get", return_value=_OSIDB_NOVEL):
+    with patch.object(client, "_get", return_value=_OSIDB_NOVEL) as mock_get:
         results = convert(InputDocument.from_dict(data), osidb_client=client)
-    assert results[0].affected[0].package.name == "com.squareup.okio:okio"
-    assert results[0].database_specific.lightwell.source == "novel-pipeline"
+    assert results == []
+    mock_get.assert_not_called()
 
 
 def _osidb_cve(cve_id: str, components: list[str]) -> dict[str, object]:
@@ -246,7 +247,7 @@ def test_ambiguous_bare_artifactid_fails_closed(mock_osv: object, mock_nvd: obje
     data = {
         "buildId": "B5",
         "created": "2026-07-15T14:02:27+00:00",
-        "vulns": ["LW-2099-0002"],
+        "vulns": ["CVE-2024-25710"],
         "primaryGav": "org.example:app:1.0.0.rhlw-00001",
         "gavs": [
             "org.example:app:1.0.0.rhlw-00001",
@@ -254,9 +255,7 @@ def test_ambiguous_bare_artifactid_fails_closed(mock_osv: object, mock_nvd: obje
             "org.b:widget:1.0.0.rhlw-00001",
         ],
     }
-    novel = _osidb_cve("", ["widget"])
-    novel["results"][0]["vulnerability_id"] = "LW-2099-0002"  # type: ignore[index]
-    novel["results"][0]["cve_id"] = None  # type: ignore[index]
+    novel = _osidb_cve("CVE-2024-25710", ["widget"])
     with patch.object(client, "_get", return_value=novel):
         results = convert(InputDocument.from_dict(data), osidb_client=client)
     names = {a.package.name for a in results[0].affected}

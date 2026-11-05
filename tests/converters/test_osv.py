@@ -13,7 +13,6 @@ from fath_cuan.converters.osv import (
     _parse_gav,
     convert,
 )
-from fath_cuan.jira.models import VulnerabilityData
 from fath_cuan.models.input import InputDocument
 from fath_cuan.osidb import OsidbClient
 from tests.conftest import (
@@ -69,111 +68,55 @@ def test_accepts_osgi_qualified_hyphen_suffix(mock_osv: object, mock_nvd: object
     assert results[0].affected[0].versions == ["1.0.0.Final"]
 
 
-@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
-@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_lw_ids_excluded_from_advisory_upstream(mock_osv: object, mock_nvd: object) -> None:
-    """LW- IDs must not appear in the advisory upstream field (LWLP-3576)."""
-    from fath_cuan.workflow import process_osv
-
-    data = {
-        "buildId": "mixed-build",
+def _advisory_build(vulns: list[str], advisory_id: str) -> dict[str, object]:
+    """Build-index whose vulnerability list is under test for LWLP-3576."""
+    return {
+        "buildId": "lw-gate-build",
         "ecosystem": "maven",
         "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 1},
         "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
         "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
-        "vulns": ["CVE-2024-25710", "LW-2026-0001"],
+        "vulns": vulns,
         "created": "2026-07-15T14:02:27+00:00",
-        "advisoryId": "RHLW-2026-abcd1234abcd1234",
+        "advisoryId": advisory_id,
     }
-    results = process_osv(data)
-    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
-    assert len(advisory) == 1
-    upstream_ids = advisory[0].get("upstream", [])
-    assert "CVE-2024-25710" in upstream_ids
-    assert "LW-2026-0001" not in upstream_ids, "LW- IDs must not leak to upstream"
 
 
+@patch("fath_cuan.converters.osv._fetch_jira")
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_lw_only_build_uses_predisclosure_url(mock_osv: object, mock_nvd: object) -> None:
-    """LW-only builds must route to predisclosure, never remediated (LWLP-3576)."""
+def test_lw_only_build_produces_no_osv_advisories(
+    mock_osv: object, mock_nvd: object, mock_jira: object
+) -> None:
+    """A pure LW- list is predisclosure. No OSV advisory is produced (LWLP-3576)."""
     from fath_cuan.workflow import process_osv
 
-    data = {
-        "buildId": "novel-build",
-        "ecosystem": "maven",
-        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 0, "n": 1},
-        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
-        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
-        "vulns": ["LW-2026-0001"],
-        "created": "2026-07-15T14:02:27+00:00",
-        "advisoryId": "RHLW-2026-1234567812345678",
-    }
-    results = process_osv(data)
-    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
-    assert len(advisory) == 1
-    lw_meta = advisory[0]["affected"][0]["database_specific"]["lightwell"]
-    assert "/predisclosure/" in lw_meta["repository_url"]
-    assert "/remediated/" not in lw_meta["repository_url"]
+    results = process_osv(_advisory_build(["LW-2026-0001"], "RHLW-2026-1234567812345678"))
+    assert results == []
+    mock_osv.assert_not_called()
+    mock_nvd.assert_not_called()
+    mock_jira.assert_not_called()
 
 
+@patch("fath_cuan.converters.osv._fetch_jira")
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_mixed_cve_lw_build_uses_predisclosure(mock_osv: object, mock_nvd: object) -> None:
-    """Mixed CVE + LW build is contaminated — predisclosure only (LWLP-3576)."""
+def test_mixed_cve_lw_build_produces_no_osv_advisories(
+    mock_osv: object, mock_nvd: object, mock_jira: object
+) -> None:
+    """One LW- id suppresses every OSV record for the build, including CVE records."""
     from fath_cuan.workflow import process_osv
 
-    data = {
-        "buildId": "mixed-build",
-        "ecosystem": "maven",
-        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 1},
-        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
-        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
-        "vulns": ["CVE-2024-25710", "LW-2026-0001"],
-        "created": "2026-07-15T14:02:27+00:00",
-        "advisoryId": "RHLW-2026-aaaa1111bbbb2222",
-    }
-    results = process_osv(data)
-    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
-    assert len(advisory) == 1
-    lw_meta = advisory[0]["affected"][0]["database_specific"]["lightwell"]
-    assert "/predisclosure/" in lw_meta["repository_url"], (
-        "Mixed CVE+LW build must route to predisclosure"
+    results = process_osv(
+        _advisory_build(
+            ["CVE-2024-25710", "LW-2026-0001"],
+            "RHLW-2026-aaaa1111bbbb2222",
+        )
     )
-    assert "/remediated/" not in lw_meta["repository_url"]
-
-
-@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
-@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_lw_ids_excluded_from_details_and_references(mock_osv: object, mock_nvd: object) -> None:
-    """LW- IDs must not appear in advisory details text or NVD references (LWLP-3576)."""
-    from fath_cuan.workflow import process_osv
-
-    data = {
-        "buildId": "mixed-details-build",
-        "ecosystem": "maven",
-        "version": {"upstream": "1.0.0", "full": "1.0.0.rhlw-00001", "b": 1, "n": 1},
-        "primaryPurl": "pkg:maven/org.example/artifact@1.0.0.rhlw-00001",
-        "purls": ["pkg:maven/org.example/artifact@1.0.0.rhlw-00001"],
-        "vulns": ["CVE-2024-25710", "LW-2026-0001"],
-        "created": "2026-07-15T14:02:27+00:00",
-        "advisoryId": "RHLW-2026-cccc3333dddd4444",
-    }
-    results = process_osv(data)
-    advisory = [r for r in results if r.get("id", "").startswith("RHLW-")]
-    assert len(advisory) == 1
-    record = advisory[0]
-
-    # LW- ID must not appear in details text
-    details = record.get("details", "")
-    assert "LW-2026-0001" not in details, "LW- ID leaked into advisory details"
-
-    # NVD reference must exist for CVE- but not for LW-
-    ref_urls = [r["url"] for r in record.get("references", [])]
-    nvd_cve_url = "https://nvd.nist.gov/vuln/detail/CVE-2024-25710"
-    nvd_lw_url = "https://nvd.nist.gov/vuln/detail/LW-2026-0001"
-    assert nvd_cve_url in ref_urls, "CVE NVD reference missing"
-    assert nvd_lw_url not in ref_urls, "LW- NVD reference leaked"
+    assert results == []
+    mock_osv.assert_not_called()
+    mock_nvd.assert_not_called()
+    mock_jira.assert_not_called()
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -683,21 +626,14 @@ OSIDB_FLAW_RESPONSE = {
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
 def test_osidb_enriches_novel_record(mock_osv: object, mock_nvd: object) -> None:
+    """An LW- list produces no OSV record, so OSIDB novel text is not published."""
     client = OsidbClient(base_url="https://example.com", token="fake")
-    with patch.object(client, "_get", return_value=OSIDB_FLAW_RESPONSE):
+    with patch.object(client, "_get", return_value=OSIDB_FLAW_RESPONSE) as mock_get:
         doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
         results = convert(doc, osidb_client=client)
 
-    r = results[0]
-    assert r.summary == "Unclosed '[' in LDAP URL host spins thread forever"
-    assert r.severity[0].score == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
-    assert r.severity[0].type == "CVSS_V3"
-    assert r.references == []
-    assert r.database_specific.lightwell.lw_id == "LW-2026-0468"
-    assert r.database_specific.lightwell.vulnerability_class == "CWE-835"
-    assert r.database_specific.lightwell.source == "novel-pipeline"
-    expected_purl = "pkg:maven/org.apache.directory.api/api-ldap-model@2.1.2.rhlw-00006"
-    assert r.affected[0].package.purl == expected_purl
+    assert results == []
+    mock_get.assert_not_called()
     mock_osv.assert_not_called()
 
 
@@ -720,7 +656,7 @@ def test_legacy_osidb_refs_filtered(mock_osv: object, mock_nvd: object) -> None:
     }
     client = OsidbClient(base_url="https://example.com", token="fake")
     with patch.object(client, "_get", return_value=flaw):
-        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
         results = convert(doc, osidb_client=client)
     urls = [r.url for r in results[0].references]
     assert "https://nvd.nist.gov/vuln/detail/CVE-2024-25710" in urls
@@ -765,7 +701,7 @@ OSIDB_EMBARGOED_FLAW = {
 def test_embargoed_flaw_redacted_when_opted_in(mock_osv: object, mock_nvd: object) -> None:
     client = OsidbClient(base_url="https://example.com", token="fake")
     with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
-        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
         results = convert(doc, osidb_client=client, redact_embargoed=True)
 
     r = results[0]
@@ -780,157 +716,46 @@ def test_embargoed_flaw_redacted_when_opted_in(mock_osv: object, mock_nvd: objec
 # --- LW- identifier tests ---
 
 
-SAMPLE_JIRA_VULN_DATA = VulnerabilityData(
-    key="VULN-1234",
-    summary="Buffer overflow in libfoo",
-    details="A buffer overflow vulnerability exists in libfoo allowing remote code execution.",
-    severity="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-    cve_id="LW-2026-0468",
-)
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_uses_jira(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert len(results) == 1
-    mock_jira.assert_called_once_with("LW-2026-0468", None)
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_summary_from_jira(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert results[0].summary == "Buffer overflow in libfoo"
-    assert "remote code execution" in results[0].details
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_severity_cvss_v3(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert len(results[0].severity) == 1
-    assert results[0].severity[0].type == "CVSS_V3"
-    assert results[0].severity[0].score == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_severity_cvss_v4(mock_jira: object) -> None:
-    jira_data = VulnerabilityData(
-        key="VULN-1234",
-        summary="Test",
-        details="Test",
-        severity="CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H",
-        cve_id="LW-2026-0468",
-    )
-    mock_jira.return_value = jira_data
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert results[0].severity[0].type == "CVSS_V4"
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_non_cvss_severity_excluded(mock_jira: object) -> None:
-    jira_data = VulnerabilityData(
-        key="VULN-1234",
-        summary="Test",
-        details="Test",
-        severity="Critical",
-        cve_id="LW-2026-0468",
-    )
-    mock_jira.return_value = jira_data
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert results[0].severity == []
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_aliases_contain_only_lw_id(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert results[0].aliases == ["LW-2026-0468"]
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_no_references(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert results[0].references == []
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_osv_id_format(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert results[0].id == "x_RHLW-LW-2026-0468-1.0.0"
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_affected_package(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    pkg = results[0].affected[0].package
-    assert pkg.name == "org.example:artifact"
-    assert pkg.purl == "pkg:maven/org.example/artifact@1.0.0.rhlw-00001"
-    events = results[0].affected[0].ranges[0].events
-    # No siblings (LW-ID, no upstream OSV) → keeps fallback "0".
-    assert events[0].introduced == "0"
-    assert events[1].fixed == "1.0.0.rhlw-00001"
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_database_specific(mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    lw = results[0].database_specific.lightwell
-    assert lw.source == "novel-pipeline"
-    assert lw.backport_base_version == "1.0.0"
-    assert lw.lw_id == "LW-2026-0468"
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-def test_lw_id_jira_returns_none(mock_jira: object) -> None:
-    mock_jira.return_value = None
-    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    results = convert(doc)
-    assert len(results) == 1
-    assert results[0].summary == ""
-    assert results[0].details == ""
-    assert results[0].severity == []
-
-
 @patch("fath_cuan.converters.osv._fetch_jira")
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_mixed_cve_and_lw_ids(mock_osv: object, mock_nvd: object, mock_jira: object) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
-    doc = InputDocument.from_dict(SAMPLE_MIXED_VULN_DATA)
-    results = convert(doc)
-    assert len(results) == 2
-    assert results[0].id == "x_RHLW-CVE-2024-25710-1.0.0"
-    assert results[1].id == "x_RHLW-LW-2026-0468-1.0.0"
-    assert results[1].summary == "Buffer overflow in libfoo"
-
-
-@patch("fath_cuan.converters.osv._fetch_jira")
-@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
-@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
-def test_lw_id_does_not_call_upstream(
+def test_lw_gav_index_produces_no_osv_advisories(
     mock_osv: object, mock_nvd: object, mock_jira: object
 ) -> None:
-    mock_jira.return_value = SAMPLE_JIRA_VULN_DATA
+    """A gav-index with only LW- ids produces no OSV records and makes no lookups."""
     doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
-    convert(doc)
+    assert convert(doc) == []
     mock_osv.assert_not_called()
     mock_nvd.assert_not_called()
+    mock_jira.assert_not_called()
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_mixed_gav_index_produces_no_osv_advisories(
+    mock_osv: object, mock_nvd: object, mock_jira: object
+) -> None:
+    """A mixed CVE and LW- gav-index produces no OSV records."""
+    doc = InputDocument.from_dict(SAMPLE_MIXED_VULN_DATA)
+    assert convert(doc) == []
+    mock_osv.assert_not_called()
+    mock_nvd.assert_not_called()
+    mock_jira.assert_not_called()
+
+
+@patch("fath_cuan.converters.osv._fetch_jira")
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_embargo_flag_does_not_emit_lw_stub(
+    mock_osv: object, mock_nvd: object, mock_jira: object
+) -> None:
+    """The embargo flag does not emit a stub whose id contains an LW- id."""
+    doc = InputDocument.from_dict(SAMPLE_LW_VULN_DATA)
+    assert convert(doc, embargo=True) == []
+    mock_osv.assert_not_called()
+    mock_nvd.assert_not_called()
+    mock_jira.assert_not_called()
 
 
 @patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
@@ -943,7 +768,7 @@ def test_embargoed_flaw_full_record_by_default(mock_osv: object, mock_nvd: objec
     """
     client = OsidbClient(base_url="https://example.com", token="fake")
     with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
-        doc = InputDocument.from_dict(SAMPLE_NOVEL_INPUT)
+        doc = InputDocument.from_dict(SAMPLE_INPUT_DATA)
         results = convert(doc, osidb_client=client)
 
     r = results[0]
