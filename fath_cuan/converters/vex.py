@@ -117,7 +117,11 @@ def _prefetch_enrichment(cve_id: str, osidb_client: OsidbClient | None) -> dict[
 
 
 def _fetch_alias_records(upstream: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Fetch the osv.dev records for an upstream record's GHSA aliases."""
+    """Fetch the osv.dev records for an upstream record's GHSA aliases.
+
+    Fetched concurrently (order preserved) so one CVE with several aliases
+    does not hold a prefetch worker for several sequential round trips.
+    """
     if not upstream:
         return []
     alias_ids = [
@@ -125,12 +129,11 @@ def _fetch_alias_records(upstream: dict[str, Any] | None) -> list[dict[str, Any]
         for a in dict.fromkeys(upstream.get("aliases") or [])
         if isinstance(a, str) and a.startswith(_ALIAS_PREFIXES)
     ][:_MAX_ALIAS_FETCHES]
-    records: list[dict[str, Any]] = []
-    for alias_id in alias_ids:
-        record = _fetch_upstream_osv(alias_id)
-        if record:
-            records.append(record)
-    return records
+    if not alias_ids:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(alias_ids)) as pool:
+        fetched = list(pool.map(_fetch_upstream_osv, alias_ids))
+    return [record for record in fetched if record]
 
 
 def _build_advisories(upstream: dict[str, Any] | None, cve_id: str) -> list[CdxAdvisory]:
@@ -385,10 +388,11 @@ def _extract_upstream_fix(
         ranges = named or [r for n, r in normed if _same_project(n, wanted)]
     if base_version:
         ranges = [r for r in ranges if _in_range(base_version, r[1], r[2])]
-        ranges.sort(key=functools.cmp_to_key(_cmp_fixed))
     if not ranges:
         return "", ""
-    name, _, fixed = ranges[0]
+    # Lowest fix wins among the ranges containing the base version.
+    best = min(ranges, key=functools.cmp_to_key(_cmp_fixed)) if base_version else ranges[0]
+    name, _, fixed = best
     return name, fixed
 
 
@@ -614,6 +618,8 @@ def _module_component(
     )
     if sbom_comp:
         identity = {k: sbom_comp[k] for k in _COMPONENT_IDENTITY_KEYS if sbom_comp.get(k)}
+        # The caller's SBOM component may lack a bom-ref (it is optional in
+        # CycloneDX); fall back to the ref used in the affects[] BOM-Link.
         identity.setdefault("bom-ref", bom_ref)
         return CdxMetadataComponent.model_validate(
             {("bom_ref" if k == "bom-ref" else k): v for k, v in identity.items()}

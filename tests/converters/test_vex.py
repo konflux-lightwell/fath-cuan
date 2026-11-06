@@ -305,6 +305,27 @@ def test_vex_embargo_stub_has_no_metadata(mock_prefetch) -> None:
         )
 
 
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_single_module_without_sbom_serial(mock_prefetch) -> None:
+    """No SBOM serial for the only module: no per-module set, but the
+    build-wide documents still name the module (coordinate-derived)."""
+    bi = BuildIndex.from_dict(SAMPLE_BUILD_INDEX)
+    result = convert_build_index(bi, sbom_serial_numbers={})
+
+    assert result.modules == []
+    assert [cve for cve, _ in result.per_cve] == ["CVE-2022-40152"]
+    _, doc = result.per_cve[0]
+    assert doc["metadata"]["component"] == {
+        "type": "library",
+        "bom-ref": _WOODSTOX_PURL,
+        "group": "com.fasterxml.woodstox",
+        "name": "woodstox-core",
+        "version": "6.0.3.rhlw-00001",
+        "purl": _WOODSTOX_PURL,
+    }
+    assert not doc["vulnerabilities"][0].get("affects")
+
+
 def _mock_one_osidb_embargoed(cve_id, osidb_client=None):
     embargoed = cve_id == "CVE-2023-5072"
     return {"osidb_meta": {"embargoed": embargoed}, "upstream": None, "nvd": None}
