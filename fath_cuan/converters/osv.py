@@ -94,6 +94,155 @@ _parse_gav = parse_gav
 _base_version = maven_base_version
 
 
+_OSV_QUERY = "https://api.osv.dev/v1/query"
+
+
+def _fetch_lightwell_advisories(package_name: str, osv_ecosystem: str) -> list[dict[str, Any]]:
+    """Fetch published Lightwell advisories for a package from osv.dev.
+
+    Issues a single POST to the OSV query API scoped to the
+    ``Red Hat Lightwell:<ecosystem>`` ecosystem. Returns the full
+    advisory records (typically 0-5 per package), or an empty list
+    on network failure.
+    """
+    ecosystem = f"Red Hat Lightwell:{osv_ecosystem}"
+    payload = json.dumps({"package": {"name": package_name, "ecosystem": ecosystem}}).encode()
+    req = urllib.request.Request(
+        _OSV_QUERY,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    logger.debug(
+        "Fetching Lightwell advisories for %s in %s",
+        package_name,
+        ecosystem,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            results = data.get("vulns", [])
+            logger.debug(
+                "Found %d existing advisory/ies for %s",
+                len(results),
+                package_name,
+            )
+            return results  # type: ignore[no-any-return]
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        logger.debug("Could not fetch Lightwell advisories for %s", package_name)
+        return []
+
+
+def _nonoverlapping_introduced(
+    current_fixed: str,
+    cve_ids: list[str],
+    existing_advisories: list[dict[str, Any]],
+    package_name: str,
+    fallback_introduced: str,
+    base_version: str | None = None,
+    osv_ecosystem: str = "",
+) -> str:
+    """Compute a non-overlapping ``introduced`` version.
+
+    When multiple advisories fix the same CVE across different version
+    branches of a package, their ECOSYSTEM ranges must not overlap.
+
+    Uses the scope-to-own-base strategy: sets ``introduced`` to the
+    advisory's own ``base_version``, which sorts below every lower
+    branch's remediated build. This avoids the tiling bug where
+    ``introduced`` set to a previous sibling's ``fixed`` still reports
+    that build as affected (because ``introduced`` is inclusive per the
+    OSV spec).
+
+    Safety rule: only raise ``introduced`` when every sibling
+    remediated build that would drop out of the range already fixes
+    ALL of this advisory's CVEs. If any excluded build is missing
+    even one CVE, keep ``fallback_introduced`` to avoid a false
+    negative.
+
+    The lowest branch (no siblings below it) keeps the fallback
+    unchanged.
+    """
+    if not base_version:
+        return fallback_introduced
+
+    current_cves = set(cve_ids)
+
+    # Collect all advisories for this package (not just same-CVE
+    # siblings). The safety rule must check every remediated build
+    # that would drop out of the range, regardless of CVE overlap.
+    pkg_ecosystem = f"Red Hat Lightwell:{osv_ecosystem}" if osv_ecosystem else ""
+    pkg_advisories: list[dict[str, Any]] = []
+    for adv in existing_advisories:
+        for aff in adv.get("affected", []):
+            pkg = aff.get("package", {})
+            name_match = pkg.get("name") == package_name
+            eco_match = not pkg_ecosystem or pkg.get("ecosystem") == pkg_ecosystem
+            if name_match and eco_match:
+                pkg_advisories.append(adv)
+                break
+
+    if not pkg_advisories:
+        return fallback_introduced
+
+    # Determine which remediated builds would be excluded by
+    # raising introduced from fallback to base_version.
+    excluded_builds: list[tuple[str, set[str]]] = []
+    for adv in pkg_advisories:
+        adv_cves = set(adv.get("upstream", []))
+        for aff in adv.get("affected", []):
+            pkg = aff.get("package", {})
+            if pkg.get("name") != package_name:
+                continue
+            if pkg_ecosystem and pkg.get("ecosystem") != pkg_ecosystem:
+                continue
+            lw = (aff.get("database_specific") or {}).get("lightwell") or {}
+            remediated = lw.get("remediated_version")
+            if not remediated:
+                for rng in aff.get("ranges", []):
+                    for ev in rng.get("events", []):
+                        if ev.get("fixed"):
+                            remediated = ev["fixed"]
+            if not remediated or remediated == current_fixed:
+                continue
+            # Is this build inside the current range
+            # [fallback_introduced, current_fixed) but outside the
+            # proposed range [base_version, current_fixed)?
+            in_current = (
+                fallback_introduced in ("0", None)
+                or _version_cmp(remediated, fallback_introduced) >= 0
+            ) and _version_cmp(remediated, current_fixed) < 0
+            in_proposed = (
+                _version_cmp(remediated, base_version) >= 0
+                and _version_cmp(remediated, current_fixed) < 0
+            )
+            if in_current and not in_proposed:
+                excluded_builds.append((remediated, adv_cves))
+
+    # Deduplicate: same build may appear from multiple affected entries.
+    seen: set[str] = set()
+    deduped: list[tuple[str, set[str]]] = []
+    for build, cves in excluded_builds:
+        if build not in seen:
+            seen.add(build)
+            deduped.append((build, cves))
+    excluded_builds = deduped
+
+    if not excluded_builds:
+        # No sibling builds excluded — lowest branch keeps fallback (Rule 3).
+        return fallback_introduced
+
+    # Safety rule: every excluded build must fix ALL of this
+    # advisory's CVEs. Check per-build, not against the union.
+    for _build, build_cves in excluded_builds:
+        if not (current_cves <= build_cves):
+            return fallback_introduced
+
+    return base_version
+
+
 def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
     """Fetch upstream OSV record for a CVE from osv.dev."""
     url = f"{_OSV_API}/{urllib.parse.quote(cve_id, safe='')}"
@@ -436,9 +585,28 @@ def _resolve_affected(
     return [], False
 
 
-def _affected_entry(c: Coordinate, upstream: dict[str, Any] | None) -> AffectedEntry:
-    """Build an OSV AffectedEntry for a built coordinate, with the upstream introduced range."""
+def _affected_entry(
+    c: Coordinate,
+    upstream: dict[str, Any] | None,
+    cve_ids: list[str] | None = None,
+) -> AffectedEntry:
+    """Build an OSV AffectedEntry for a built coordinate.
+
+    When *cve_ids* is provided, queries existing Lightwell advisories
+    to avoid overlapping ranges (LWLP-3883).
+    """
     introduced = _extract_introduced(upstream, c.name, c.osv_ecosystem) if upstream else "0"
+    if cve_ids:
+        existing = _fetch_lightwell_advisories(c.name, c.osv_ecosystem)
+        introduced = _nonoverlapping_introduced(
+            c.version,
+            cve_ids,
+            existing,
+            c.name,
+            introduced,
+            base_version=c.base_version,
+            osv_ecosystem=c.osv_ecosystem,
+        )
     return AffectedEntry(
         package=Package(name=c.name, purl=c.purl, ecosystem=c.osv_ecosystem),
         versions=[c.base_version],
@@ -620,6 +788,183 @@ def _version_key(v: str) -> tuple[int, Any]:
         return (1, v)
 
 
+# ── Maven ComparableVersion ──────────────────────────────────────────
+# Faithful port of org.apache.maven.artifact.versioning.ComparableVersion.
+# Handles all Maven qualifier semantics: alpha < beta < milestone < rc
+# < snapshot < "" (release) < sp, plus aliases (ga/final/release → "").
+
+_MV_QUALIFIERS = ["alpha", "beta", "milestone", "rc", "snapshot", "", "sp"]
+_MV_RELEASE_IDX = str(_MV_QUALIFIERS.index(""))
+_MV_ALIASES = {"ga": "", "final": "", "release": "", "cr": "rc"}
+
+
+def _mv_comparable_qualifier(q: str) -> str:
+    q = _MV_ALIASES.get(q, q)
+    if q in _MV_QUALIFIERS:
+        return str(_MV_QUALIFIERS.index(q))
+    return f"{len(_MV_QUALIFIERS)}-{q}"
+
+
+class _MvInt:
+    __slots__ = ("v",)
+
+    def __init__(self, v: int) -> None:
+        self.v = v
+
+    def is_null(self) -> bool:
+        return self.v == 0
+
+    def cmp(self, other: _MvInt | _MvStr | _MvList | None) -> int:
+        if other is None:
+            return 0 if self.v == 0 else 1
+        if isinstance(other, _MvInt):
+            return (self.v > other.v) - (self.v < other.v)
+        return 1  # int > string, int > list
+
+
+class _MvStr:
+    __slots__ = ("v",)
+
+    def __init__(self, v: str, followed_by_digit: bool = False) -> None:
+        if followed_by_digit and len(v) == 1:
+            v = {"a": "alpha", "b": "beta", "m": "milestone"}.get(v, v)
+        self.v = _MV_ALIASES.get(v, v)
+
+    def is_null(self) -> bool:
+        return _mv_comparable_qualifier(self.v) == _MV_RELEASE_IDX
+
+    def cmp(self, other: _MvInt | _MvStr | _MvList | None) -> int:
+        if other is None:
+            a = _mv_comparable_qualifier(self.v)
+            return (a > _MV_RELEASE_IDX) - (a < _MV_RELEASE_IDX)
+        if isinstance(other, _MvInt):
+            return -1
+        if isinstance(other, _MvStr):
+            a = _mv_comparable_qualifier(self.v)
+            b = _mv_comparable_qualifier(other.v)
+            return (a > b) - (a < b)
+        return -1  # string < list
+
+
+class _MvList:
+    __slots__ = ("items",)
+
+    def __init__(self) -> None:
+        self.items: list[_MvInt | _MvStr | _MvList] = []
+
+    def add(self, it: _MvInt | _MvStr | _MvList) -> None:
+        self.items.append(it)
+
+    def is_null(self) -> bool:
+        return len(self.items) == 0
+
+    def normalize(self) -> None:
+        i = len(self.items)
+        while i > 0 and self.items[i - 1].is_null():
+            i -= 1
+        del self.items[i:]
+
+    def cmp(self, other: _MvInt | _MvStr | _MvList | None) -> int:
+        if other is None:
+            return 0 if not self.items else self.items[0].cmp(None)
+        if isinstance(other, _MvInt):
+            return -1
+        if isinstance(other, _MvStr):
+            return 1
+        a, b = self.items, other.items
+        for i in range(max(len(a), len(b))):
+            left = a[i] if i < len(a) else None
+            right = b[i] if i < len(b) else None
+            c = (0 if right is None else -1 * right.cmp(None)) if left is None else left.cmp(right)
+            if c != 0:
+                return c
+        return 0
+
+
+def _parse_maven(version: str) -> _MvList:
+    version = version.lower()
+    root = _MvList()
+    stack = [root]
+    cur = root
+    is_digit = False
+    start = 0
+
+    def _item(isdig: bool, buf: str) -> _MvInt | _MvStr:
+        if isdig:
+            return _MvInt(int(buf.lstrip("0") or "0"))
+        return _MvStr(buf)
+
+    n = len(version)
+    for i in range(n):
+        c = version[i]
+        if c == ".":
+            cur.add(_MvInt(0) if i == start else _item(is_digit, version[start:i]))
+            start = i + 1
+        elif c == "-":
+            cur.add(_MvInt(0) if i == start else _item(is_digit, version[start:i]))
+            start = i + 1
+            new = _MvList()
+            cur.add(new)
+            cur = new
+            stack.append(new)
+        elif c.isdigit():
+            if not is_digit and i > start:
+                cur.add(_MvStr(version[start:i], followed_by_digit=True))
+                start = i
+                new = _MvList()
+                cur.add(new)
+                cur = new
+                stack.append(new)
+            is_digit = True
+        else:
+            if is_digit and i > start:
+                cur.add(_item(True, version[start:i]))
+                start = i
+                new = _MvList()
+                cur.add(new)
+                cur = new
+                stack.append(new)
+            is_digit = False
+    if n > start:
+        cur.add(_item(is_digit, version[start:]))
+    for lst in reversed(stack):
+        lst.normalize()
+    return root
+
+
+def _maven_cmp(a: str, b: str) -> int:
+    return _parse_maven(a).cmp(_parse_maven(b))
+
+
+# ── Version comparison ───────────────────────────────────────────────
+
+
+def _version_cmp(a: str, b: str) -> int:
+    """Compare two version strings using Maven ComparableVersion.
+
+    Uses a faithful port of Maven's ComparableVersion, which handles
+    all qualifier semantics (alpha < beta < rc < release < sp, OSGi
+    qualifiers like .Final/.RELEASE/.GA as release-equivalent, etc.).
+
+    For PyPI local versions (``X.Y.Z+rhlw.N``), falls back to PEP 440
+    via ``packaging.version.Version``.
+
+    Limitation: PEP 440 pre-release forms such as ``1.0.dev1`` are not
+    used in Lightwell builds today. If they appear, ``1.0.dev1`` would
+    sort below ``1.0`` (correct per PEP 440) but only when the ``+``
+    branch is taken; the Maven path would sort them incorrectly.
+    Pass the ecosystem through and select the comparator explicitly if
+    this ever becomes a concern.
+    """
+    if "+" in a or "+" in b:
+        try:
+            va, vb = Version(a), Version(b)
+            return (va > vb) - (va < vb)
+        except InvalidVersion:
+            pass
+    return _maven_cmp(a, b)
+
+
 def _prefetch_cve(cve_id: str, osidb_client: OsidbClient | None) -> dict[str, Any]:
     """Fetch OSIDB, upstream OSV, and NVD data for a single CVE."""
     osidb_meta: dict[str, Any] | None = None
@@ -789,6 +1134,20 @@ def _build_advisory_record(
                     introduced_versions.append(v)
                 upstream_versions.extend(_extract_versions(ups, mc.name, mc.osv_ecosystem))
         introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
+
+        # Avoid overlapping ranges when the same CVE is fixed across
+        # multiple version branches of the same package (LWLP-3883).
+        existing = _fetch_lightwell_advisories(mc.name, mc.osv_ecosystem)
+        introduced = _nonoverlapping_introduced(
+            mc.version,
+            cve_ids,
+            existing,
+            mc.name,
+            introduced,
+            base_version=mc.base_version,
+            osv_ecosystem=mc.osv_ecosystem,
+        )
+
         versions = sorted(set(upstream_versions), key=_version_key) or [mc.base_version]
 
         affected.append(
@@ -1135,7 +1494,7 @@ def _build_records(
         # stamping the build's arbitrary primary coordinate on every vuln.
         matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
         if matched:
-            affected_entries = [_affected_entry(mc, upstream) for mc in matched]
+            affected_entries = [_affected_entry(mc, upstream, [cve_id]) for mc in matched]
         elif strict:
             # Reached only when an authoritative source (upstream advisory, with
             # OSIDB consulted as a fallback in _resolve_affected) named affected
@@ -1157,7 +1516,7 @@ def _build_records(
             )
             continue
         else:
-            affected_entries = [_affected_entry(coord, upstream)]
+            affected_entries = [_affected_entry(coord, upstream, [cve_id])]
 
         lw_meta = LightwellMeta(
             source=source,

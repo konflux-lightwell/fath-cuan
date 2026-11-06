@@ -43,7 +43,7 @@ def test_cve_resolves_to_real_module_not_primary_gav(mock_osv: object, mock_nvd:
     assert len(aff) == 1
     assert aff[0].package.name == "org.springframework:spring-core"
     assert aff[0].package.purl == "pkg:maven/org.springframework/spring-core@5.3.18.rhlw-00010"
-    # introduced comes from the upstream range for spring-core; fixed is the rhlw build.
+    # No siblings → keeps upstream-derived fallback "0".
     assert aff[0].ranges[0].events[0].introduced == "0"
     assert aff[0].ranges[0].events[1].fixed == "5.3.18.rhlw-00010"
 
