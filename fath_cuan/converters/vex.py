@@ -21,6 +21,7 @@ from fath_cuan.converters.osv import (
     _fetch_nvd,
     _fetch_upstream_osv,
     _is_public_url,
+    _norm_name,
     _version_cmp,
 )
 from fath_cuan.ecosystems import (
@@ -326,19 +327,26 @@ def _in_range(version: str, introduced: str, fixed: str) -> bool:
     return lower_ok and _version_cmp(version, fixed) < 0
 
 
-def _same_project(candidate: str, package_name: str) -> bool:
-    """True when *candidate* shares a groupId or artifactId with *package_name*.
+def _related_groups(a: str, b: str) -> bool:
+    """True when one groupId is the other or a dotted extension of it."""
+    return a == b or a.endswith(f".{b}") or b.endswith(f".{a}")
 
-    Covers project renames (e.g. ``dom4j:dom4j`` -> ``org.dom4j:dom4j``)
-    while rejecting unrelated packages listed on the same advisory, whose
-    version numbering has nothing to do with the build. Names without a
-    ``:`` (PyPI) only match exactly.
+
+def _same_project(candidate: str, package_name: str) -> bool:
+    """True when *candidate* belongs to the same project as *package_name*.
+
+    Both names must already be normalized (see ``_norm_name``). A shared
+    groupId matches. A shared artifactId matches only when the groupIds are
+    related (one extends the other), which covers project renames such as
+    ``dom4j:dom4j`` -> ``org.dom4j:dom4j`` without matching unrelated
+    projects that happen to share a generic artifactId (``org.bar:core``
+    vs ``com.foo:core``). Names without a ``:`` (PyPI) only match exactly.
     """
     if ":" not in candidate or ":" not in package_name:
         return candidate == package_name
     c_group, _, c_artifact = candidate.partition(":")
     group, _, artifact = package_name.partition(":")
-    return c_group == group or c_artifact == artifact
+    return c_group == group or (c_artifact == artifact and _related_groups(c_group, group))
 
 
 def _cmp_fixed(a: tuple[str, str, str], b: tuple[str, str, str]) -> int:
@@ -353,10 +361,13 @@ def _extract_upstream_fix(
 ) -> tuple[str, str]:
     """Extract the upstream package name and fix version from OSV data.
 
-    *upstream* is the CVE record and/or its alias (GHSA) records. Ranges
-    for *package_name* are preferred; otherwise only ranges from the same
-    project (same groupId or artifactId) are considered -- another
-    project's fix version must never be named. When *base_version* is
+    *upstream* is the CVE record and/or its alias (GHSA) records. Package
+    names are compared after ecosystem normalization (PEP 503 for PyPI,
+    casefold for Maven), since advisories do not always match the build's
+    spelling (``PyYAML`` vs ``pyyaml``). Ranges for *package_name* are
+    preferred; otherwise only ranges from the same project (see
+    ``_same_project``) are considered -- another project's fix version
+    must never be named. When *base_version* is
     known, only the range containing it yields a fix version (lowest fix
     wins) -- a CVE fixed on several upstream branches must not report
     another branch's fix.
@@ -368,8 +379,10 @@ def _extract_upstream_fix(
     records = [upstream] if isinstance(upstream, dict) else upstream
     ranges = _ecosystem_fix_ranges(records, osv_ecosystem)
     if package_name:
-        named = [r for r in ranges if r[0] == package_name]
-        ranges = named or [r for r in ranges if _same_project(r[0], package_name)]
+        wanted = _norm_name(package_name, osv_ecosystem)
+        normed = [(_norm_name(r[0], osv_ecosystem), r) for r in ranges]
+        named = [r for n, r in normed if n == wanted]
+        ranges = named or [r for n, r in normed if _same_project(n, wanted)]
     if base_version:
         ranges = [r for r in ranges if _in_range(base_version, r[1], r[2])]
         ranges.sort(key=functools.cmp_to_key(_cmp_fixed))
@@ -632,6 +645,7 @@ def _build_doc_set(
     the recommendation text and drives the upstream-fix lookup.
     """
     metadata = CdxVEXMetadata(timestamp=timestamp, component=component)
+    has_stub = False
     per_cve_docs: list[tuple[str, dict[str, Any]]] = []
     all_vex_vulns: list[CdxVulnerability] = []
     artifact_name = text_coord.name.split(":")[-1]
@@ -644,6 +658,7 @@ def _build_doc_set(
         # carry no metadata, so nothing beyond the CVE ID is disclosed.
         if embargo or (redact_embargoed and osidb_meta and osidb_meta.get("embargoed")):
             stub = _build_embargo_stub(cve_id, timestamp)
+            has_stub = True
             all_vex_vulns.append(stub)
             doc = CdxVEXDocument(
                 serial_number=f"urn:uuid:{uuid4()}",
@@ -695,12 +710,14 @@ def _build_doc_set(
         per_cve_docs.append((cve_id, doc.model_dump(by_alias=True, exclude_none=True)))
 
     # A multi-CVE document is only meaningful for two or more statements;
-    # with one it would duplicate the per-CVE document.
+    # with one it would duplicate the per-CVE document. Like the stub
+    # documents, a multi-CVE document holding any embargo stub carries no
+    # metadata: it must not tie the embargoed IDs to a named module.
     multi_cve_doc = None
     if len(all_vex_vulns) >= 2:
         multi_doc = CdxVEXDocument(
             serial_number=f"urn:uuid:{uuid4()}",
-            metadata=metadata,
+            metadata=None if has_stub else metadata,
             vulnerabilities=all_vex_vulns,
         )
         multi_cve_doc = multi_doc.model_dump(by_alias=True, exclude_none=True)

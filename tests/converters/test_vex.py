@@ -305,6 +305,32 @@ def test_vex_embargo_stub_has_no_metadata(mock_prefetch) -> None:
         )
 
 
+def _mock_one_osidb_embargoed(cve_id, osidb_client=None):
+    embargoed = cve_id == "CVE-2023-5072"
+    return {"osidb_meta": {"embargoed": embargoed}, "upstream": None, "nvd": None}
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "kwargs"),
+    [
+        (_mock_no_enrichment, {"embargo": True}),  # all stubs
+        (_mock_one_osidb_embargoed, {"redact_embargoed": True}),  # stub + full entry
+    ],
+    ids=["embargo", "redact-mixed"],
+)
+def test_vex_multi_cve_with_stub_has_no_metadata(side_effect, kwargs) -> None:
+    """A multi-CVE document holding an embargo stub never names the module."""
+    data = {**SAMPLE_BUILD_INDEX, "vulns": ["CVE-2022-45688", "CVE-2023-5072"]}
+    bi = BuildIndex.from_dict(data)
+    with patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=side_effect):
+        result = convert_build_index(bi, sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS, **kwargs)
+
+    for multi in (result.multi_cve, result.modules[0].multi_cve):
+        assert multi is not None
+        assert len(multi["vulnerabilities"]) == 2
+        assert "metadata" not in multi
+
+
 _LW_ID = "LW-2026-0042"
 
 
@@ -517,8 +543,9 @@ def test_extract_upstream_fix_ignores_other_projects() -> None:
 @pytest.mark.parametrize(
     "listed",
     [
-        "dom4j:dom4j",  # same artifactId (project rename)
+        "dom4j:dom4j",  # same artifactId, related groupId (project rename)
         "org.dom4j:dom4j-core",  # same groupId
+        "Org.Dom4j:Dom4j",  # exact match up to case
     ],
 )
 def test_extract_upstream_fix_falls_back_within_same_project(listed: str) -> None:
@@ -563,3 +590,28 @@ def test_cvss_method_matches_vector_version(vector: str, method: str) -> None:
     nvd_key = {"CVSSv3": "cvssMetricV30", "CVSSv4": "cvssMetricV40"}.get(method, "cvssMetricV31")
     nvd = {"metrics": {nvd_key: [{"cvssData": {"vectorString": vector, "baseScore": 9.8}}]}}
     assert _extract_nvd_score(nvd) == (vector, 9.8, method)
+
+
+def test_extract_upstream_fix_ignores_unrelated_same_artifact() -> None:
+    """A shared generic artifactId alone does not make the same project."""
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    record = _single_package_record("org.bar:core", "9.0")
+    assert _extract_upstream_fix([record], "Maven", "com.foo:core", "1.0") == ("", "")
+
+
+def test_extract_upstream_fix_normalizes_pypi_names() -> None:
+    """PyPI names match after PEP 503 normalization (GHSA spells ``PyYAML``)."""
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    record = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "PyYAML"},
+                "ranges": [
+                    {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "5.4"}]}
+                ],
+            }
+        ]
+    }
+    assert _extract_upstream_fix([record], "PyPI", "pyyaml", "5.3.1") == ("PyYAML", "5.4")
