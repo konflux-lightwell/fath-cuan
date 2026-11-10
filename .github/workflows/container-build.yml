@@ -30,6 +30,9 @@ jobs:
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             safe_ref="${{ github.head_ref }}"
             safe_ref="${safe_ref//\//-}"
+            # buildah-build@v3 lowercases the tag but push-to-registry@v3
+            # looks for it as given, so pass an already-lowercase tag.
+            safe_ref="${safe_ref,,}"
             echo "tag=pr-${{ github.event.pull_request.number }}-${safe_ref}" >> "$GITHUB_OUTPUT"
             echo "extra_label=quay.expires-after=5d" >> "$GITHUB_OUTPUT"
           else
