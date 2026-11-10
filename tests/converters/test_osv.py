@@ -900,7 +900,7 @@ def test_extract_severity_v4_only_when_no_v3_available() -> None:
 def test_single_cve_new_format(mock_osv: object, mock_nvd: object) -> None:
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_DATA)
     results = convert(doc)
-    assert len(results) == 2
+    assert len(results) == 1
     r = results[0]
     assert r.id == "RHLW-2026-5fc0229c48c1b99c"
     assert r.schema_version == "1.9.2"
@@ -911,9 +911,6 @@ def test_single_cve_new_format(mock_osv: object, mock_nvd: object) -> None:
     assert r.affected[0].database_specific is not None
     dumped = r.affected[0].database_specific.lightwell.model_dump(exclude_none=True)
     assert "source" not in dumped
-    legacy = results[1]
-    assert legacy.id.startswith("x_RHLW-")
-    assert legacy.related == ["RHLW-2026-5fc0229c48c1b99c"]
 
 
 @patch("fath_cuan.converters.osv._fetch_upstream_osv")
@@ -935,7 +932,7 @@ def test_multi_cve_new_format(mock_nvd: object, mock_osv: object) -> None:
     }.get(cve_id)
     doc = InputDocument.from_dict(SAMPLE_ADVISORY_MULTI_CVE_DATA)
     results = convert(doc)
-    assert len(results) == 3
+    assert len(results) == 1
     r = results[0]
     assert r.id == "RHLW-2026-5fc0229c48c1b99c"
     assert r.upstream is not None
@@ -1788,3 +1785,78 @@ def test_legacy_record_scopes_to_base_when_lowest(
     introduced_ev = next(e for e in events if e.introduced is not None)
     # Lowest branch (9.0.0 sibling is above current, not excluded): keeps fallback "0".
     assert introduced_ev.introduced == "0"
+
+
+# ---------------------------------------------------------------------------
+# LWLP-5093: no legacy per-CVE x_RHLW- records beside the RHLW- advisory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        SAMPLE_INPUT_DATA,
+        SAMPLE_MULTI_CVE_DATA,
+        SAMPLE_LW_VULN_DATA,
+        SAMPLE_MIXED_VULN_DATA,
+        SAMPLE_DUPLICATE_CVE_DATA,
+    ],
+    ids=["one-cve", "multi-cve", "lw-only", "cve-and-lw", "duplicate-cve"],
+)
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_advisory_path_emits_only_the_rhlw_record(
+    mock_osv: object, mock_nvd: object, data: dict[str, Any]
+) -> None:
+    """With an advisory ID, the RHLW- advisory is the only record."""
+    doc = InputDocument.from_dict({**data, "advisoryId": "RHLW-2026-5fc0229c48c1b99c"})
+    results = convert(doc)
+
+    assert [r.id for r in results] == ["RHLW-2026-5fc0229c48c1b99c"]
+    # Every vulnerability (incl. LW- IDs, which slan-cuan's predisclosure
+    # gate looks for) is still named by the advisory.
+    assert set(doc.vulns) <= set(results[0].upstream or [])
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_dropped_advisory_does_not_fall_back_to_legacy_records(
+    mock_osv: object, mock_nvd: object
+) -> None:
+    """An advisory with only embargoed CVEs yields nothing, not x_RHLW- records."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
+        doc = InputDocument.from_dict(
+            {**SAMPLE_NOVEL_INPUT, "advisoryId": "RHLW-2026-5fc0229c48c1b99c"}
+        )
+        results = convert(doc, osidb_client=client)
+
+    assert results == []
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_legacy_records_without_advisory_id(mock_osv: object, mock_nvd: object) -> None:
+    """Without an advisory ID the legacy per-CVE records are still produced."""
+    results = convert(InputDocument.from_dict(SAMPLE_MULTI_CVE_DATA))
+
+    assert results
+    assert all(r.id.startswith("x_RHLW-") for r in results)
+    assert all(r.related is None for r in results)
+
+
+@pytest.mark.parametrize("mode", ["embargo", "redact_embargoed"])
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_stub_modes_keep_the_legacy_loop(mock_osv: object, mock_nvd: object, mode: str) -> None:
+    """The CLI's embargo/redaction stub modes are unchanged (no advisory record)."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
+        doc = InputDocument.from_dict(
+            {**SAMPLE_NOVEL_INPUT, "advisoryId": "RHLW-2026-5fc0229c48c1b99c"}
+        )
+        results = convert(doc, osidb_client=client, **{mode: True})
+
+    assert results
+    assert all(r.id.startswith("x_RHLW-") for r in results)
+    assert all(r.database_specific.lightwell.embargo_status == "pre-disclosure" for r in results)

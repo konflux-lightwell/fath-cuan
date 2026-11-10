@@ -1313,8 +1313,15 @@ def _build_records(
     """Build OSV records for a resolved coordinate and vulnerability list.
 
     When ``advisory_id`` is set and neither ``embargo`` nor
-    ``redact_embargoed`` is active, the new per-release path produces a
-    single record for all CVEs. Otherwise the legacy per-CVE loop runs.
+    ``redact_embargoed`` is active, the per-release path produces a single
+    ``RHLW-`` record for all CVEs and nothing else: the legacy per-CVE
+    ``x_RHLW-`` records are no longer emitted beside it (LWLP-5093). An
+    advisory dropped because no CVE resolves to a built module (all
+    embargoed or attributed elsewhere) yields no record at all rather than
+    falling back to per-CVE records for those same CVEs.
+
+    The legacy per-CVE loop only runs without an ``advisory_id`` or in the
+    ``embargo`` / ``redact_embargoed`` stub modes (fath-cuan CLI).
     """
     coordinates = coord.name
     version = coord.version
@@ -1328,9 +1335,8 @@ def _build_records(
 
     candidates = _candidate_index(built_coords or [])
 
-    advisory_records: list[OSVDocument] = []
     if advisory_id and not embargo and not redact_embargoed:
-        advisory_records = _build_advisory_record(
+        return _build_advisory_record(
             advisory_id,
             coord,
             vulns,
@@ -1544,4 +1550,4 @@ def _build_records(
             r.related = [advisory_id]
 
     logger.info("Generated %d OSV records", len(records))
-    return advisory_records + records
+    return records
