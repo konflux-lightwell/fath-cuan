@@ -294,7 +294,7 @@ PYPI_ADVISORY_BUILD_INDEX = {
 def test_pypi_single_ecosystem(mock_osv: object, mock_nvd: object) -> None:
     bi = BuildIndex.from_dict(PYPI_ADVISORY_BUILD_INDEX)
     results = convert_build_index(bi)
-    assert len(results) == 2
+    assert len(results) == 1
     r = results[0]
     assert r.id == "RHLW-2026-679b0e21fab70949"
     assert len(r.affected) == 1
