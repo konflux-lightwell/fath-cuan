@@ -1,3 +1,3 @@
 """fath-cuan: Convert JSON into OSV and VEX files."""
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
