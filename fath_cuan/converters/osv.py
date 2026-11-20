@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,7 +46,24 @@ _OSV_ID_PREFIX = "x_RHLW-"
 _OSV_API = "https://api.osv.dev/v1/vulns"
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
+# osv.dev lookups decide module placement, so a failed lookup must not be
+# mistaken for "no package data". Transient failures (429, 5xx, network,
+# timeout) are retried; if they persist, UpstreamFetchError is raised.
+_OSV_FETCH_ATTEMPTS = 3
+_OSV_RETRY_BASE_DELAY = 1.0
+_OSV_RETRY_MAX_DELAY = 10.0
+
 logger = logging.getLogger(__name__)
+
+
+class UpstreamFetchError(RuntimeError):
+    """An osv.dev lookup failed for a reason other than "record not found".
+
+    Raised instead of returning None so that callers placing vulnerabilities
+    on modules fail the release rather than fall back to the primary module
+    (the LWLP-5917 misattribution).
+    """
+
 
 _ADVISORY_PATTERNS = (
     "/advisories/",
@@ -276,18 +295,55 @@ def _nonoverlapping_introduced(
     return base_version
 
 
+def _retry_delay(err: Exception, attempt: int) -> float:
+    """Seconds to wait before retrying *attempt* (1-based) after *err*."""
+    delay = _OSV_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+    if isinstance(err, urllib.error.HTTPError) and err.headers is not None:
+        retry_after = err.headers.get("Retry-After")
+        if retry_after:
+            with contextlib.suppress(ValueError):
+                delay = max(delay, float(retry_after))
+    return float(min(delay, _OSV_RETRY_MAX_DELAY))
+
+
 def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
-    """Fetch upstream OSV record for a CVE from osv.dev."""
+    """Fetch the upstream OSV record for a CVE or GHSA ID from osv.dev.
+
+    Returns None only when osv.dev has no record (HTTP 404). Any other
+    failure (429, 5xx, other HTTP errors, network errors, timeouts) is
+    retried up to ``_OSV_FETCH_ATTEMPTS`` times and then raised as
+    :class:`UpstreamFetchError`: module placement treats None as "no package
+    data" and would otherwise put the CVE on the primary module.
+    """
     url = f"{_OSV_API}/{urllib.parse.quote(cve_id, safe='')}"
-    logger.debug("Fetching upstream OSV for %s", cve_id)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            logger.debug("Received upstream OSV response for %s", cve_id)
-            return json.loads(resp.read())  # type: ignore[no-any-return]
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-        logger.debug("No upstream OSV data found for %s", cve_id)
-        return None
+    last_err: Exception | None = None
+    for attempt in range(1, _OSV_FETCH_ATTEMPTS + 1):
+        logger.debug("Fetching upstream OSV for %s (attempt %d)", cve_id, attempt)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                logger.debug("Received upstream OSV response for %s", cve_id)
+                return json.loads(resp.read())  # type: ignore[no-any-return]
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                logger.debug("No upstream OSV record for %s", cve_id)
+                return None
+            last_err = e
+            # Other 4xx errors (except 429) will not change on retry.
+            if 400 <= e.code < 500 and e.code != 429:
+                break
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_err = e
+        if attempt < _OSV_FETCH_ATTEMPTS:
+            delay = _retry_delay(last_err, attempt)
+            logger.warning(
+                "osv.dev lookup for %s failed (%s); retrying in %.0fs",
+                cve_id,
+                last_err,
+                delay,
+            )
+            time.sleep(delay)
+    raise UpstreamFetchError(f"osv.dev lookup for {cve_id} failed: {last_err}") from last_err
 
 
 def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
@@ -1086,6 +1142,11 @@ def place_vulnerabilities(
       (``primaryGav``).
 
     A build without enumerated modules places everything on *coord*.
+    *prefetched* must come from a successful fetch: :func:`_fetch_upstream_osv`
+    raises :class:`UpstreamFetchError` on a failed osv.dev lookup rather than
+    returning None, so an outage fails the release instead of reaching the
+    primary-module fallback. A public CVE that does reach the fallback is
+    logged as a warning.
     Embargo does not affect placement: the OSV leaves embargoed IDs out, the
     VEX keeps ``LW-`` IDs for predisclosure.
     """
@@ -1114,6 +1175,17 @@ def place_vulnerabilities(
                 coord.version,
             )
         else:
+            if vuln.startswith("CVE-"):
+                # A public CVE normally carries package data. Landing here
+                # means neither osv.dev/GHSA nor OSIDB named a built module,
+                # so the primary module is a guess worth surfacing.
+                logger.warning(
+                    "%s: no upstream or OSIDB package data names a module built by "
+                    "%s %s; placed on the primary module by fallback",
+                    vuln,
+                    coord.name,
+                    coord.version,
+                )
             _add(coord.name, vuln)
 
     # Stable module order, independent of the order of the vuln list: the
