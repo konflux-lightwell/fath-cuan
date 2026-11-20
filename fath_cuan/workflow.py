@@ -6,7 +6,6 @@ from typing import Any
 from fath_cuan.converters import osv as osv_converter
 from fath_cuan.converters import vex as vex_converter
 from fath_cuan.converters.vex import VEXResult
-from fath_cuan.ecosystems import Coordinate, coordinate_from_purl, maven_coordinate
 from fath_cuan.jira.client import JiraClient
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
@@ -24,68 +23,16 @@ def _is_build_index(input_json: dict[str, Any]) -> bool:
     return "purls" in input_json or "ecosystem" in input_json
 
 
-def _index_coordinates(input_json: dict[str, Any]) -> tuple[Coordinate, list[Coordinate]]:
-    """Return the primary coordinate and the built module coordinates of an index."""
-    if _is_build_index(input_json):
-        bi = BuildIndex.from_dict(input_json)
-        upstream = bi.version.upstream
-        coord = coordinate_from_purl(
-            bi.primary_purl, ecosystem=bi.ecosystem, upstream_version=upstream
-        )
-        built = osv_converter._purl_built_coords(bi.purls, bi.ecosystem, upstream)
-        return coord, built
-    doc = InputDocument.from_dict(input_json)
-    coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
-    built = osv_converter._maven_built_coords(doc.gavs, doc.upstream_version)
-    return coord, built
-
-
-def resolve_module_vulns(
-    input_json: dict[str, Any],
-    osidb_client: OsidbClient | None = None,
-) -> dict[str, list[str]]:
-    """Place the build's vulnerabilities on the modules that fix them (LWLP-5917).
-
-    Returns ``{module name: [vuln IDs]}`` (Maven ``group:artifact``), the
-    primary module first, one entry per module that has a fix. Pass the
-    result to :func:`process_osv` and :func:`process_vex` (and use it to
-    choose the SBOMs to enrich) so the OSV advisories, SBOMs and VEX
-    documents name exactly the same modules. See
-    :func:`fath_cuan.converters.osv.place_vulnerabilities` for the rules.
-    """
-    vulns = list(input_json.get("vulns") or [])
-    if not vulns:
-        return {}
-    coord, built = _index_coordinates(input_json)
-    # Placement needs package names only: skip NVD (CVSS comes later, in
-    # process_osv / process_vex).
-    prefetched = osv_converter._prefetch_all(vulns, osidb_client, with_nvd=False)
-    placement = osv_converter.place_vulnerabilities(vulns, coord, built, prefetched)
-    logger.info(
-        "Placed %d vulnerabilities on %d module(s): %s",
-        len(vulns),
-        len(placement),
-        "; ".join(f"{m}: {', '.join(ids)}" for m, ids in placement.items()),
-    )
-    return placement
-
-
 def process_osv(
     input_json: dict[str, Any],
     embargo: bool = False,
     osidb_client: OsidbClient | None = None,
     jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
-    module_vulns: dict[str, list[str]] | None = None,
-    repository_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Convert input JSON into OSV records.
+    """Convert input JSON into OSV records (one per vulnerability).
 
-    Dispatches to build-index or legacy gav-index path. With an advisory ID,
-    one advisory per module that has a fix (*module_vulns* from
-    :func:`resolve_module_vulns`, or computed). *repository_url* overrides
-    the repository recorded in the advisories (default: predisclosure for a
-    build with ``LW-`` IDs, remediated otherwise).
+    Dispatches to build-index or legacy gav-index path.
     """
     if _is_build_index(input_json):
         logger.info(
@@ -99,8 +46,6 @@ def process_osv(
             osidb_client=osidb_client,
             jira_client=jira_client,
             redact_embargoed=redact_embargoed,
-            module_vulns=module_vulns,
-            repository_url=repository_url,
         )
     else:
         logger.info(
@@ -114,8 +59,6 @@ def process_osv(
             osidb_client=osidb_client,
             jira_client=jira_client,
             redact_embargoed=redact_embargoed,
-            module_vulns=module_vulns,
-            repository_url=repository_url,
         )
     logger.info("Converted %d OSV records", len(osv_docs))
     return [d.model_dump(exclude_none=True) for d in osv_docs]
@@ -128,7 +71,6 @@ def process_vex(
     embargo: bool = False,
     redact_embargoed: bool = False,
     sbom_components: dict[str, dict[str, Any]] | None = None,
-    module_vulns: dict[str, list[str]] | None = None,
 ) -> VEXResult:
     """Generate CycloneDX 1.7 VEX documents from input JSON.
 
@@ -152,7 +94,6 @@ def process_vex(
             embargo=embargo,
             redact_embargoed=redact_embargoed,
             sbom_components=sbom_components,
-            module_vulns=module_vulns,
         )
 
     logger.info(
@@ -167,5 +108,4 @@ def process_vex(
         embargo=embargo,
         redact_embargoed=redact_embargoed,
         sbom_components=sbom_components,
-        module_vulns=module_vulns,
     )

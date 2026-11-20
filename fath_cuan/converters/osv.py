@@ -13,7 +13,6 @@ from typing import Any
 from packageurl import PackageURL
 from packaging.version import InvalidVersion, Version
 
-from fath_cuan.advisory_id import derive_advisory_id
 from fath_cuan.ecosystems import (
     Coordinate,
     coordinate_from_purl,
@@ -69,33 +68,6 @@ _REPOSITORY_URLS: dict[str, str] = {
     ),
 }
 
-# Builds carrying a Lightwell novel fix (``LW-`` ID) are released only to
-# the predisclosure repositories (ADR-0055).
-_PREDISCLOSURE_REPOSITORY_URLS: dict[str, str] = {
-    "maven": os.environ.get(
-        "FATH_CUAN_REPOSITORY_URL_MAVEN_PREDISCLOSURE",
-        "https://packages.redhat.com/lightwell/java/predisclosure/",
-    ),
-    "pypi": os.environ.get(
-        "FATH_CUAN_REPOSITORY_URL_PYPI_PREDISCLOSURE",
-        "https://packages.redhat.com/lightwell/python/predisclosure/",
-    ),
-}
-
-
-def _repository_url(ecosystem: str, vulns: list[str], override: str | None = None) -> str:
-    """Repository the build is released to: *override*, else derived from *vulns*.
-
-    A build with any ``LW-`` ID is predisclosure content; otherwise it is
-    remediated content.
-    """
-    if override:
-        return override
-    if any(v.startswith("LW-") for v in vulns):
-        return _PREDISCLOSURE_REPOSITORY_URLS.get(ecosystem, "")
-    return _REPOSITORY_URLS.get(ecosystem, "")
-
-
 _REGISTRY_NAMES: dict[str, str] = {
     "maven": "Maven Central",
     "pypi": "PyPI",
@@ -123,11 +95,6 @@ _base_version = maven_base_version
 
 
 _OSV_QUERY = "https://api.osv.dev/v1/query"
-
-# osv.dev CVE records usually carry only GIT ranges; the Maven/PyPI package
-# names and ECOSYSTEM ranges live on the GHSA aliases. Cap the alias fan-out.
-_ALIAS_PREFIXES = ("GHSA-",)
-_MAX_ALIAS_FETCHES = 5
 
 
 def _fetch_lightwell_advisories(package_name: str, osv_ecosystem: str) -> list[dict[str, Any]]:
@@ -519,30 +486,22 @@ def _candidate_index(built_coords: list[Coordinate]) -> dict[str, Coordinate]:
     return index
 
 
-def _upstream_affected_names(
-    upstream: dict[str, Any] | list[dict[str, Any]] | None, osv_ecosystem: str
-) -> list[str]:
-    """Affected package names for ``osv_ecosystem`` from upstream OSV record(s).
-
-    *upstream* is the CVE record, or the CVE record and its GHSA alias
-    records (the package names usually live on the GHSA records).
-    """
+def _upstream_affected_names(upstream: dict[str, Any] | None, osv_ecosystem: str) -> list[str]:
+    """Affected package names for ``osv_ecosystem`` from an upstream OSV record."""
     if not upstream:
         return []
-    records = [upstream] if isinstance(upstream, dict) else upstream
     names: list[str] = []
-    for record in records:
-        for a in record.get("affected", []):
-            pkg = a.get("package", {})
-            if pkg.get("ecosystem") == osv_ecosystem:
-                name = pkg.get("name", "")
-                if name and name not in names:
-                    names.append(name)
+    for a in upstream.get("affected", []):
+        pkg = a.get("package", {})
+        if pkg.get("ecosystem") == osv_ecosystem:
+            name = pkg.get("name", "")
+            if name:
+                names.append(name)
     return names
 
 
 def _resolve_affected(
-    upstream: dict[str, Any] | list[dict[str, Any]] | None,
+    upstream: dict[str, Any] | None,
     osidb_meta: dict[str, Any] | None,
     candidates: dict[str, Coordinate],
     osv_ecosystem: str,
@@ -1006,158 +965,65 @@ def _version_cmp(a: str, b: str) -> int:
     return _maven_cmp(a, b)
 
 
-def _fetch_alias_records(upstream: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Fetch the osv.dev records for an upstream record's GHSA aliases.
-
-    osv.dev CVE records often carry only GIT ranges; the Maven/PyPI package
-    names live on the GHSA aliases. Fetched concurrently (order preserved),
-    capped at ``_MAX_ALIAS_FETCHES`` per CVE.
-    """
-    if not upstream:
-        return []
-    aliases = [a for a in upstream.get("aliases", []) if a.startswith(_ALIAS_PREFIXES)]
-    aliases = aliases[:_MAX_ALIAS_FETCHES]
-    if not aliases:
-        return []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(aliases)) as pool:
-        records = list(pool.map(_fetch_upstream_osv, aliases))
-    return [r for r in records if r]
-
-
-def _prefetch_cve(
-    cve_id: str, osidb_client: OsidbClient | None, with_nvd: bool = True
-) -> dict[str, Any]:
-    """Fetch OSIDB, upstream OSV (with GHSA aliases), and NVD data for one vuln.
-
-    NVD supplies the CVSS severity and description fallback of the OSV
-    advisory. Module placement needs only package names, so it passes
-    *with_nvd* False to avoid extra calls to the slow, rate-limited NVD API.
-    """
+def _prefetch_cve(cve_id: str, osidb_client: OsidbClient | None) -> dict[str, Any]:
+    """Fetch OSIDB, upstream OSV, and NVD data for a single CVE."""
     osidb_meta: dict[str, Any] | None = None
     if osidb_client and osidb_client.available:
         flaw = osidb_client.get_flaw(cve_id)
         if flaw:
             osidb_meta = extract_osidb_metadata(flaw)
     upstream = _fetch_upstream_osv(cve_id) if cve_id.startswith("CVE-") else None
-    upstream_aliases = _fetch_alias_records(upstream)
-    nvd = _fetch_nvd(cve_id) if with_nvd and cve_id.startswith("CVE-") else None
-    return {
-        "osidb_meta": osidb_meta,
-        "upstream": upstream,
-        "upstream_aliases": upstream_aliases,
-        "nvd": nvd,
-    }
-
-
-def _prefetch_all(
-    vulns: list[str], osidb_client: OsidbClient | None, with_nvd: bool = True
-) -> dict[str, dict[str, Any]]:
-    """Prefetch :func:`_prefetch_cve` data for each distinct vuln, in parallel."""
-    unique = list(dict.fromkeys(vulns))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {v: pool.submit(_prefetch_cve, v, osidb_client, with_nvd) for v in unique}
-        return {v: fut.result() for v, fut in futures.items()}
-
-
-def place_vulnerabilities(
-    vulns: list[str],
-    coord: Coordinate,
-    built_coords: list[Coordinate],
-    prefetched: dict[str, dict[str, Any]],
-) -> dict[str, list[str]]:
-    """Place each vulnerability on the built module(s) it fixes (LWLP-5917).
-
-    Returns ``{module name: [vuln IDs]}``: one entry per module that has a
-    fix, the primary module (*coord*) first and then the build's module
-    order (*built_coords*), IDs in build order. This is the
-    single placement used for the OSV advisories, the enriched SBOMs and the
-    VEX documents, so all three always name the same modules.
-
-    Per vulnerability (``prefetched[vuln]`` as returned by
-    :func:`_prefetch_cve`):
-
-    * **Public CVE with osv.dev/GHSA package data** in the build's
-      ecosystem: the matching built module(s), exact name match. If none of
-      the named packages was built, OSIDB component names are tried; if
-      those place nothing either, the CVE is not placed (another build fixes
-      it).
-    * **CVE without upstream package data, ``LW-`` ID, or anything else**:
-      OSIDB component names; if they place nothing, the primary module
-      (``primaryGav``).
-
-    A build without enumerated modules places everything on *coord*.
-    Embargo does not affect placement: the OSV leaves embargoed IDs out, the
-    VEX keeps ``LW-`` IDs for predisclosure.
-    """
-    candidates = _candidate_index(built_coords)
-    placed: dict[str, list[str]] = {}
-
-    def _add(module: str, vuln: str) -> None:
-        ids = placed.setdefault(module, [])
-        if vuln not in ids:
-            ids.append(vuln)
-
-    for vuln in dict.fromkeys(vulns):
-        data = prefetched.get(vuln) or {}
-        records = [r for r in (data.get("upstream"), *data.get("upstream_aliases", [])) if r]
-        matched, strict = _resolve_affected(
-            records, data.get("osidb_meta"), candidates, coord.osv_ecosystem
-        )
-        if matched:
-            for mc in matched:
-                _add(mc.name, vuln)
-        elif strict:
-            logger.warning(
-                "%s: upstream names no module built by %s %s; not placed",
-                vuln,
-                coord.name,
-                coord.version,
-            )
-        else:
-            _add(coord.name, vuln)
-
-    # Stable module order, independent of the order of the vuln list: the
-    # primary module first, then the build's module order. Callers that
-    # number the modules (slan-cuan's per-module VEX datetime) rely on it.
-    order = [coord.name, *(c.name for c in built_coords)]
-    rank = {name: i for i, name in reversed(list(enumerate(order)))}
-    return dict(sorted(placed.items(), key=lambda item: rank.get(item[0], len(order))))
+    nvd = _fetch_nvd(cve_id) if cve_id.startswith("CVE-") else None
+    return {"osidb_meta": osidb_meta, "upstream": upstream, "nvd": nvd}
 
 
 def _build_advisory_record(
     advisory_id: str,
-    module: Coordinate,
+    coord: Coordinate,
     vulns: list[str],
     published: str,
     modified: str,
-    prefetched: dict[str, dict[str, Any]],
-    repository_url: str,
+    candidates: dict[str, Coordinate],
+    osidb_client: OsidbClient | None,
 ) -> list[OSVDocument]:
-    """Build the OSV advisory for ONE module and the vulns placed on it.
+    """Build a single per-release OSV record for all CVEs (new advisory path)."""
+    osv_ecosystem = coord.osv_ecosystem
 
-    Every ID in *vulns* has already been placed on *module* by
-    :func:`place_vulnerabilities`; embargoed IDs are left out. Returns an
-    empty list when nothing remains to publish.
-    """
     cve_ids: list[str] = []
     ghsa_ids: list[str] = []
     all_cwe_ids: list[str] = []
     best_severity: list[Severity] = []
     per_cve_descriptions: list[tuple[str, str]] = []
     all_refs: list[Reference] = []
+    resolved_modules: list[Coordinate] = []
+    seen_modules: set[str] = set()
     upstream_cache: dict[str, dict[str, Any] | None] = {}
+    included_cves: set[str] = set()
 
-    for cve_id in dict.fromkeys(vulns):
-        data = prefetched.get(cve_id) or {}
-        osidb_meta: dict[str, Any] | None = data.get("osidb_meta")
-        upstream: dict[str, Any] | None = data.get("upstream")
-        nvd: dict[str, Any] | None = data.get("nvd")
+    seen_cves: set[str] = set()
+    unique_vulns: list[str] = []
+    for cve_id in vulns:
+        if cve_id not in seen_cves:
+            seen_cves.add(cve_id)
+            unique_vulns.append(cve_id)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            cve_id: pool.submit(_prefetch_cve, cve_id, osidb_client) for cve_id in unique_vulns
+        }
+        prefetched = {cve_id: fut.result() for cve_id, fut in futures.items()}
+
+    for cve_id in unique_vulns:
+        data = prefetched[cve_id]
+        osidb_meta: dict[str, Any] | None = data["osidb_meta"]
+        upstream: dict[str, Any] | None = data["upstream"]
+        nvd: dict[str, Any] | None = data["nvd"]
+        cve_ids.append(cve_id)
 
         if osidb_meta and osidb_meta.get("embargoed"):
             logger.warning("Skipping embargoed %s in advisory %s", cve_id, advisory_id)
             continue
 
-        cve_ids.append(cve_id)
         upstream_cache[cve_id] = upstream
 
         # Collect GHSA aliases from upstream
@@ -1206,10 +1072,8 @@ def _build_advisory_record(
                 if url and _is_public_url(url):
                     ref_type = _classify_advisory_reference(url, r.get("type", "WEB"))
                     all_refs.append(Reference(url=url, type=ref_type))
-        if cve_id.startswith("CVE-"):
-            all_refs.append(
-                Reference(url=f"https://nvd.nist.gov/vuln/detail/{cve_id}", type="ADVISORY")
-            )
+        nvd_url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+        all_refs.append(Reference(url=nvd_url, type="ADVISORY"))
 
         # GHSA advisory references
         if upstream:
@@ -1222,63 +1086,93 @@ def _build_advisory_record(
                         )
                     )
 
-    if not cve_ids:
-        logger.warning(
-            "No publishable vulnerabilities for %s %s (advisory %s); no record",
-            module.name,
-            module.version,
-            advisory_id,
-        )
-        return []
+        # Module resolution
+        matched, strict = _resolve_affected(upstream, osidb_meta, candidates, osv_ecosystem)
+        if matched:
+            for mc in matched:
+                if mc.name not in seen_modules:
+                    seen_modules.add(mc.name)
+                    resolved_modules.append(mc)
+            included_cves.add(cve_id)
+        elif strict:
+            logger.warning("Skipping unresolvable %s in advisory %s", cve_id, advisory_id)
+        else:
+            if coord.name not in seen_modules:
+                seen_modules.add(coord.name)
+                resolved_modules.append(coord)
+            included_cves.add(cve_id)
+
+    # Filter to only CVEs that contributed at least one resolved module
+    cve_ids = [c for c in cve_ids if c in included_cves]
+    per_cve_descriptions = [(c, d) for c, d in per_cve_descriptions if c in included_cves]
+    ghsa_seen: set[str] = set()
+    filtered_ghsa: list[str] = []
+    for cid in cve_ids:
+        ups = upstream_cache.get(cid)
+        if ups:
+            for alias in ups.get("aliases", []):
+                if alias.startswith("GHSA-") and alias not in ghsa_seen:
+                    ghsa_seen.add(alias)
+                    filtered_ghsa.append(alias)
+    ghsa_ids = filtered_ghsa
 
     # upstream IDs: CVEs first, then GHSAs, deduplicated
     all_upstream_ids = list(dict.fromkeys(cve_ids + ghsa_ids))
 
-    introduced_versions: list[str] = []
-    upstream_versions: list[str] = []
-    for ups in upstream_cache.values():
-        if ups:
-            v = _extract_introduced(ups, module.name, module.osv_ecosystem)
-            if v != "0":
-                introduced_versions.append(v)
-            upstream_versions.extend(_extract_versions(ups, module.name, module.osv_ecosystem))
-    introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
+    # Affected entries: single Red Hat Lightwell ecosystem per package.
+    affected: list[AffectedEntry] = []
+    for mc in resolved_modules:
+        vl_purl = _versionless_purl(mc)
+        repo_url = _REPOSITORY_URLS.get(mc.ecosystem, "")
 
-    # Avoid overlapping ranges when the same CVE is fixed across
-    # multiple version branches of the same package (LWLP-3883).
-    existing = _fetch_lightwell_advisories(module.name, module.osv_ecosystem)
-    introduced = _nonoverlapping_introduced(
-        module.version,
-        cve_ids,
-        existing,
-        module.name,
-        introduced,
-        base_version=module.base_version,
-        osv_ecosystem=module.osv_ecosystem,
-    )
+        introduced_versions: list[str] = []
+        upstream_versions: list[str] = []
+        for _cve_id, ups in upstream_cache.items():
+            if ups:
+                v = _extract_introduced(ups, mc.name, mc.osv_ecosystem)
+                if v != "0":
+                    introduced_versions.append(v)
+                upstream_versions.extend(_extract_versions(ups, mc.name, mc.osv_ecosystem))
+        introduced = min(introduced_versions, key=_version_key) if introduced_versions else "0"
 
-    versions = sorted(set(upstream_versions), key=_version_key) or [module.base_version]
-
-    # Affected entry: exactly one package per advisory (LWLP-5917).
-    affected = [
-        AffectedEntry(
-            package=Package(
-                ecosystem=f"Red Hat Lightwell:{module.osv_ecosystem}",
-                name=module.name,
-                purl=_versionless_purl(module),
-            ),
-            versions=versions,
-            ranges=[Range(events=[Event(introduced=introduced), Event(fixed=module.version)])],
-            database_specific=DatabaseSpecific(
-                lightwell=LightwellMeta(
-                    source=None,
-                    backport_base_version=module.base_version,
-                    remediated_version=module.version,
-                    repository_url=repository_url,
-                )
-            ),
+        # Avoid overlapping ranges when the same CVE is fixed across
+        # multiple version branches of the same package (LWLP-3883).
+        existing = _fetch_lightwell_advisories(mc.name, mc.osv_ecosystem)
+        introduced = _nonoverlapping_introduced(
+            mc.version,
+            cve_ids,
+            existing,
+            mc.name,
+            introduced,
+            base_version=mc.base_version,
+            osv_ecosystem=mc.osv_ecosystem,
         )
-    ]
+
+        versions = sorted(set(upstream_versions), key=_version_key) or [mc.base_version]
+
+        affected.append(
+            AffectedEntry(
+                package=Package(
+                    ecosystem=f"Red Hat Lightwell:{mc.osv_ecosystem}",
+                    name=mc.name,
+                    purl=vl_purl,
+                ),
+                versions=versions,
+                ranges=[Range(events=[Event(introduced=introduced), Event(fixed=mc.version)])],
+                database_specific=DatabaseSpecific(
+                    lightwell=LightwellMeta(
+                        source=None,
+                        backport_base_version=mc.base_version,
+                        remediated_version=mc.version,
+                        repository_url=repo_url,
+                    )
+                ),
+            )
+        )
+
+    if not affected:
+        logger.error("No resolvable modules for advisory %s; dropping record", advisory_id)
+        return []
 
     # References: deduplicated per-CVE refs (NVD as ADVISORY)
     refs: list[Reference] = []
@@ -1288,8 +1182,16 @@ def _build_advisory_record(
             seen_urls.add(r.url)
             refs.append(r)
 
-    summary = f"Lightwell Security Advisory: {module.name.split(':')[-1]} {module.version}"
-    details = _synthesize_details(module, per_cve_descriptions)
+    # Summary and details
+    if resolved_modules:
+        summary_name = resolved_modules[0].name.split(":")[-1]
+        summary_version = resolved_modules[0].version
+    else:
+        summary_name = coord.name.split(":")[-1]
+        summary_version = coord.version
+    summary = f"Lightwell Security Advisory: {summary_name} {summary_version}"
+    details_coord = resolved_modules[0] if resolved_modules else coord
+    details = _synthesize_details(details_coord, per_cve_descriptions)
 
     # TODO(LWLP-2370): re-enable advisory-level database_specific when CSAF
     # and cwe_ids enrichment are reliably wired up.
@@ -1313,59 +1215,8 @@ def _build_advisory_record(
         affected=affected,
         credits=[Credit(name="Red Hat Lightwell", type="REMEDIATION_DEVELOPER")],
     )
-    logger.info(
-        "Generated advisory record %s for %s with %d vuln(s)",
-        advisory_id,
-        module.name,
-        len(cve_ids),
-    )
+    logger.info("Generated advisory record %s with %d CVEs", advisory_id, len(cve_ids))
     return [record]
-
-
-def _build_module_advisories(
-    advisory_id: str,
-    coord: Coordinate,
-    vulns: list[str],
-    created: datetime,
-    published: str,
-    modified: str,
-    built_coords: list[Coordinate],
-    osidb_client: OsidbClient | None,
-    module_vulns: dict[str, list[str]] | None,
-    repository_url: str,
-) -> list[OSVDocument]:
-    """One OSV advisory per module that has a fix (LWLP-5917).
-
-    The primary module keeps *advisory_id* (derived, or an explicit
-    override); every other module gets the ID derived from its own name and
-    version, the ID it would have as a primary module.
-    """
-    prefetched = _prefetch_all(vulns, osidb_client)
-    placement = (
-        module_vulns
-        if module_vulns is not None
-        else place_vulnerabilities(vulns, coord, built_coords, prefetched)
-    )
-    by_name = {c.name: c for c in built_coords}
-    records: list[OSVDocument] = []
-    for name, ids in placement.items():
-        module = coord if name == coord.name else by_name.get(name)
-        if module is None:
-            logger.error("Placement names %s, which this build did not produce; skipped", name)
-            continue
-        module_id = (
-            advisory_id
-            if name == coord.name
-            else derive_advisory_id(module.osv_ecosystem, module.name, module.version, created)
-        )
-        records.extend(
-            _build_advisory_record(
-                module_id, module, ids, published, modified, prefetched, repository_url
-            )
-        )
-    if not records:
-        logger.error("No resolvable modules for advisory %s; dropping record", advisory_id)
-    return records
 
 
 def convert(
@@ -1374,8 +1225,6 @@ def convert(
     osidb_client: OsidbClient | None = None,
     jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
-    module_vulns: dict[str, list[str]] | None = None,
-    repository_url: str | None = None,
 ) -> list[OSVDocument]:
     """Convert a PNC (Maven) gav-index into one OSV record per CVE.
 
@@ -1406,8 +1255,6 @@ def convert(
         redact_embargoed=redact_embargoed,
         built_coords=built_coords,
         advisory_id=doc.advisory_id,
-        module_vulns=module_vulns,
-        repository_url=repository_url,
     )
 
 
@@ -1417,8 +1264,6 @@ def convert_build_index(
     osidb_client: OsidbClient | None = None,
     jira_client: JiraClient | None = None,
     redact_embargoed: bool = False,
-    module_vulns: dict[str, list[str]] | None = None,
-    repository_url: str | None = None,
 ) -> list[OSVDocument]:
     """Convert a unified build-index into one OSV record per vulnerability.
 
@@ -1451,8 +1296,6 @@ def convert_build_index(
         redact_embargoed=redact_embargoed,
         built_coords=built_coords,
         advisory_id=bi.advisory_id,
-        module_vulns=module_vulns,
-        repository_url=repository_url,
     )
 
 
@@ -1466,19 +1309,16 @@ def _build_records(
     redact_embargoed: bool = False,
     built_coords: list[Coordinate] | None = None,
     advisory_id: str | None = None,
-    module_vulns: dict[str, list[str]] | None = None,
-    repository_url: str | None = None,
 ) -> list[OSVDocument]:
     """Build OSV records for a resolved coordinate and vulnerability list.
 
     When ``advisory_id`` is set and neither ``embargo`` nor
-    ``redact_embargoed`` is active, the per-release path produces one
-    ``RHLW-`` advisory per module that has a fix (LWLP-5917), each listing
-    only that module's vulnerabilities, and nothing else: the legacy per-CVE
-    ``x_RHLW-`` records are no longer emitted beside it (LWLP-5093). The
-    placement comes from *module_vulns* when the caller computed it (see
-    :func:`place_vulnerabilities`), otherwise it is computed here. A module
-    whose vulnerabilities are all embargoed yields no record.
+    ``redact_embargoed`` is active, the per-release path produces a single
+    ``RHLW-`` record for all CVEs and nothing else: the legacy per-CVE
+    ``x_RHLW-`` records are no longer emitted beside it (LWLP-5093). An
+    advisory dropped because no CVE resolves to a built module (all
+    embargoed or attributed elsewhere) yields no record at all rather than
+    falling back to per-CVE records for those same CVEs.
 
     The legacy per-CVE loop only runs without an ``advisory_id`` or in the
     ``embargo`` / ``redact_embargoed`` stub modes (fath-cuan CLI).
@@ -1493,21 +1333,18 @@ def _build_records(
     published = created_utc.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     modified = published
 
+    candidates = _candidate_index(built_coords or [])
+
     if advisory_id and not embargo and not redact_embargoed:
-        return _build_module_advisories(
+        return _build_advisory_record(
             advisory_id,
             coord,
             vulns,
-            created_utc,
             published,
             modified,
-            built_coords or [],
+            candidates,
             osidb_client,
-            module_vulns,
-            _repository_url(coord.ecosystem, vulns, repository_url),
         )
-
-    candidates = _candidate_index(built_coords or [])
 
     records: list[OSVDocument] = []
     seen_cves: set[str] = set()

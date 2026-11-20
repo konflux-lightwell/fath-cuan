@@ -23,7 +23,6 @@ from fath_cuan.converters.osv import (
     _is_public_url,
     _norm_name,
     _version_cmp,
-    place_vulnerabilities,
 )
 from fath_cuan.ecosystems import (
     Coordinate,
@@ -76,19 +75,11 @@ class ModuleVEX:
     Every document references only this module's SBOM in ``affects[]`` and
     names the module in ``metadata.component``. ``multi_cve`` is set only
     when the module has two or more statements.
-
-    ``timestamp`` is the module's VEX datetime (``metadata.timestamp``,
-    ``published``/``updated``), which callers also use in the filename
-    (Sonatype v1.1: ``<CVE>-<datetime>.bom.json`` / ``<datetime>.bom.json``).
-    It is the build's datetime for the first module with fixes and one
-    second later for each further module, so the modules of one build never
-    share a VEX filename (LWLP-5917).
     """
 
     purl: str
     per_cve: list[tuple[str, dict[str, Any]]]
     multi_cve: dict[str, Any] | None
-    timestamp: str = ""
 
 
 @dataclass(frozen=True)
@@ -345,21 +336,20 @@ def _related_groups(a: str, b: str) -> bool:
 
 
 def _same_project(candidate: str, package_name: str) -> bool:
-    """True when *candidate* is *package_name* under a renamed groupId.
+    """True when *candidate* belongs to the same project as *package_name*.
 
-    Both names must already be normalized (see ``_norm_name``). Only the
-    same artifactId under a related groupId (one extends the other) matches,
-    which covers project renames such as ``dom4j:dom4j`` ->
-    ``org.dom4j:dom4j``. A sibling module of the same project (same groupId,
-    other artifactId, e.g. ``logback-core`` for ``logback-classic``) never
-    matches: its fix version must not be named for this module (LWLP-5917).
-    Names without a ``:`` (PyPI) only match exactly.
+    Both names must already be normalized (see ``_norm_name``). A shared
+    groupId matches. A shared artifactId matches only when the groupIds are
+    related (one extends the other), which covers project renames such as
+    ``dom4j:dom4j`` -> ``org.dom4j:dom4j`` without matching unrelated
+    projects that happen to share a generic artifactId (``org.bar:core``
+    vs ``com.foo:core``). Names without a ``:`` (PyPI) only match exactly.
     """
     if ":" not in candidate or ":" not in package_name:
         return candidate == package_name
     c_group, _, c_artifact = candidate.partition(":")
     group, _, artifact = package_name.partition(":")
-    return c_artifact == artifact and _related_groups(c_group, group)
+    return c_group == group or (c_artifact == artifact and _related_groups(c_group, group))
 
 
 def _cmp_fixed(a: tuple[str, str, str], b: tuple[str, str, str]) -> int:
@@ -378,9 +368,9 @@ def _extract_upstream_fix(
     names are compared after ecosystem normalization (PEP 503 for PyPI,
     casefold for Maven), since advisories do not always match the build's
     spelling (``PyYAML`` vs ``pyyaml``). Ranges for *package_name* are
-    preferred; otherwise only ranges of the same package under a renamed
-    groupId (see ``_same_project``) are considered -- another package's fix
-    version, including a sibling module's, must never be named. When *base_version* is
+    preferred; otherwise only ranges from the same project (see
+    ``_same_project``) are considered -- another project's fix version
+    must never be named. When *base_version* is
     known, only the range containing it yields a fix version (lowest fix
     wins) -- a CVE fixed on several upstream branches must not report
     another branch's fix.
@@ -411,14 +401,13 @@ def _build_recommendation(
     version: str,
     upstream_name: str,
     upstream_fix_version: str,
-    repository: str = "remediated",
 ) -> str:
     """Build update recommendation text matching gold standard.
 
     Names the upstream fix version only when it is known; never emits a
     placeholder version.
     """
-    lead = f"Update to {artifact_name} {version} from Red Hat Lightwell {repository} repository."
+    lead = f"Update to {artifact_name} {version} from Red Hat Lightwell remediated repository."
     if not upstream_fix_version:
         return f"{lead} This version backports the upstream fix."
     fix_name = upstream_name.split(":")[-1] if upstream_name else artifact_name
@@ -486,7 +475,6 @@ def _build_lw_vulnerability(
     artifact_name: str,
     version: str,
     timestamp: str,
-    repository: str = "predisclosure",
 ) -> CdxVulnerability:
     """Build the VEX entry for a Lightwell novel fix (``LW-`` identifier).
 
@@ -495,7 +483,7 @@ def _build_lw_vulnerability(
     """
     recommendation = (
         f"Update to {artifact_name} {version} from Red Hat Lightwell "
-        f"{repository} repository. This version contains the Red Hat Lightwell "
+        f"remediated repository. This version contains the Red Hat Lightwell "
         f"fix for {lw_id}."
     )
     return CdxVulnerability(
@@ -525,20 +513,15 @@ def _build_vulnerability(
     osv_ecosystem: str = "Maven",
     package_name: str = "",
     base_version: str = "",
-    repository: str = "remediated",
 ) -> CdxVulnerability:
-    """Build a single CycloneDX vulnerability entry.
-
-    *repository* names the Lightwell repository the version is released to
-    (``remediated`` or ``predisclosure``) in the recommendation text.
-    """
+    """Build a single CycloneDX vulnerability entry."""
     osidb_meta = enrichment.get("osidb_meta")
     upstream = enrichment.get("upstream")
     nvd = enrichment.get("nvd")
 
     if _is_lw(cve_id):
         return _build_lw_vulnerability(
-            cve_id, osidb_meta, affects_entries, artifact_name, version, timestamp, repository
+            cve_id, osidb_meta, affects_entries, artifact_name, version, timestamp
         )
 
     if not osidb_meta and not upstream and not nvd:
@@ -554,7 +537,7 @@ def _build_vulnerability(
     if not upstream_fix_version:
         logger.info("No upstream fix version found for %s; using neutral wording", cve_id)
     recommendation = _build_recommendation(
-        artifact_name, version, upstream_name, upstream_fix_version, repository
+        artifact_name, version, upstream_name, upstream_fix_version
     )
 
     advisories = _build_advisories(upstream, cve_id)
@@ -651,36 +634,6 @@ def _module_component(
     )
 
 
-_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-def _offset_timestamp(timestamp: str, seconds: int) -> str:
-    """Return *timestamp* (``YYYY-MM-DDTHH:MM:SSZ``) shifted by *seconds*."""
-    if not seconds:
-        return timestamp
-    from datetime import UTC, datetime, timedelta
-
-    shifted = datetime.strptime(timestamp, _TS_FORMAT).replace(tzinfo=UTC) + timedelta(
-        seconds=seconds
-    )
-    return shifted.strftime(_TS_FORMAT)
-
-
-def _repository_label(component: CdxMetadataComponent | None, vulns: list[str]) -> str:
-    """Lightwell repository named in the recommendation text.
-
-    Taken from the module's purl ``repository_url`` (the SBOM subject's
-    identity, set by the caller) when present; otherwise a build carrying an
-    ``LW-`` ID is predisclosure content (ADR-0055) and anything else is
-    remediated content.
-    """
-    purl = (component.purl if component else None) or ""
-    for label in ("predisclosure", "remediated", "validated"):
-        if f"/{label}/" in urllib.parse.unquote(purl):
-            return label
-    return "predisclosure" if any(_is_lw(v) for v in vulns) else "remediated"
-
-
 def _build_doc_set(
     cve_vulns: list[str],
     enrichment_data: dict[str, dict[str, Any]],
@@ -690,22 +643,18 @@ def _build_doc_set(
     component: CdxMetadataComponent | None,
     embargo: bool,
     redact_embargoed: bool,
-    repository: str = "remediated",
-    targets_by_vuln: dict[str, list[tuple[Coordinate, str, str]]] | None = None,
 ) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any] | None]:
     """Build per-CVE documents and the optional multi-CVE document.
 
     *targets* are the ``(coordinate, sbom_serial, bom_ref)`` entries listed
     in each statement's ``affects[]``; *text_coord* names the package in
-    the recommendation text and drives the upstream-fix lookup. When
-    *targets_by_vuln* is given (build-wide documents), each statement lists
-    only the modules its vulnerability was placed on, and the first of them
-    names the package in the text.
+    the recommendation text and drives the upstream-fix lookup.
     """
     metadata = CdxVEXMetadata(timestamp=timestamp, component=component)
     has_stub = False
     per_cve_docs: list[tuple[str, dict[str, Any]]] = []
     all_vex_vulns: list[CdxVulnerability] = []
+    artifact_name = text_coord.name.split(":")[-1]
 
     for cve_id in cve_vulns:
         enrichment = enrichment_data[cve_id]
@@ -738,30 +687,24 @@ def _build_doc_set(
             )
             continue
 
-        vuln_targets = targets_by_vuln.get(cve_id, []) if targets_by_vuln is not None else targets
-        if targets_by_vuln is not None and not vuln_targets:
-            continue
-        vuln_coord = vuln_targets[0][0] if targets_by_vuln is not None else text_coord
-
         affects = [
             CdxAffects(
                 ref=_build_affects_ref(sn, 1, bom_ref),
                 versions=[CdxVersion(version=c.version, status="unaffected")],
             )
-            for c, sn, bom_ref in vuln_targets
+            for c, sn, bom_ref in targets
         ]
 
         vuln = _build_vulnerability(
             cve_id,
             enrichment,
             affects,
-            vuln_coord.name.split(":")[-1],
-            vuln_coord.version,
+            artifact_name,
+            text_coord.version,
             timestamp,
-            osv_ecosystem=vuln_coord.osv_ecosystem,
-            package_name=vuln_coord.name,
-            base_version=vuln_coord.base_version,
-            repository=repository,
+            osv_ecosystem=text_coord.osv_ecosystem,
+            package_name=text_coord.name,
+            base_version=text_coord.base_version,
         )
         all_vex_vulns.append(vuln)
 
@@ -797,15 +740,8 @@ def _build_vex_documents(
     embargo: bool = False,
     redact_embargoed: bool = False,
     sbom_components: dict[str, dict[str, Any]] | None = None,
-    module_vulns: dict[str, list[str]] | None = None,
 ) -> VEXResult:
-    """Shared core for VEX generation (both build-index and legacy paths).
-
-    Each module's documents hold only the vulnerabilities placed on that
-    module (LWLP-5917): *module_vulns* when the caller computed the
-    placement (see :func:`fath_cuan.converters.osv.place_vulnerabilities`),
-    otherwise it is computed here from the same enrichment data.
-    """
+    """Shared core for VEX generation (both build-index and legacy paths)."""
     if not vulns:
         return VEXResult(per_cve=[], multi_cve=None)
 
@@ -828,71 +764,43 @@ def _build_vex_documents(
         }
         enrichment_data = {cve_id: fut.result() for cve_id, fut in futures.items()}
 
-    placement = (
-        module_vulns
-        if module_vulns is not None
-        else place_vulnerabilities(cve_vulns, coord, all_coords, enrichment_data)
-    )
-    placed_vulns = [v for v in cve_vulns if any(v in ids for ids in placement.values())]
-
     targets: list[tuple[Coordinate, str, str]] = []
     for c in all_coords:
         sn, bom_ref = _resolve_sbom_ref(c, sbom_sns)
         if sn:
             targets.append((c, sn, bom_ref))
-        elif placement.get(c.name):
-            logger.warning(
-                "No SBOM serial number for %s, which has fixes %s; no VEX for it",
-                c.purl,
-                placement[c.name],
-            )
+        else:
+            logger.info("No SBOM serial number for %s; no per-module VEX", c.purl)
 
     # One independent VEX document set per module, referencing only that
-    # module's SBOM, named in metadata.component, holding only that
-    # module's vulnerabilities. Modules follow the placement order (primary
-    # first, then the build's module order); each further module's
-    # datetime is one second later, so no two share a VEX filename.
-    rank = {name: i for i, name in enumerate(placement)}
-    targets.sort(key=lambda t: rank.get(t[0].name, len(rank)))
+    # module's SBOM and named in metadata.component.
     modules: list[ModuleVEX] = []
     for c, sn, bom_ref in targets:
-        module_ids = [v for v in cve_vulns if v in placement.get(c.name, [])]
-        if not module_ids:
-            logger.info("No vulnerabilities placed on %s; no VEX for it", c.name)
-            continue
-        module_ts = _offset_timestamp(timestamp, len(modules))
         component = _module_component(c, bom_ref, components)
         per_cve, multi = _build_doc_set(
-            module_ids,
+            cve_vulns,
             enrichment_data,
             [(c, sn, bom_ref)],
             c,
-            module_ts,
+            timestamp,
             component,
             embargo,
             redact_embargoed,
-            repository=_repository_label(component, cve_vulns),
         )
-        modules.append(
-            ModuleVEX(purl=component.purl, per_cve=per_cve, multi_cve=multi, timestamp=module_ts)
-        )
+        modules.append(ModuleVEX(purl=component.purl, per_cve=per_cve, multi_cve=multi))
 
     if len(all_coords) == 1 and modules:
         per_cve_docs, multi_cve_doc = modules[0].per_cve, modules[0].multi_cve
     else:
-        # Build-wide shape kept for existing callers: each statement's
-        # affects[] lists the modules its vulnerability was placed on, so
-        # metadata.component is set only for a single-module build (one
-        # whose module has no SBOM serial to reference).
+        # Build-wide shape kept for existing callers: affects[] lists every
+        # module, so metadata.component is set only for a single-module build
+        # (one whose module has no SBOM serial to reference).
         build_component = None
         if len(all_coords) == 1:
             only = all_coords[0]
             build_component = _module_component(only, only.purl.split("?", 1)[0], components)
-        targets_by_vuln = {
-            v: [t for t in targets if v in placement.get(t[0].name, [])] for v in placed_vulns
-        }
         per_cve_docs, multi_cve_doc = _build_doc_set(
-            placed_vulns,
+            cve_vulns,
             enrichment_data,
             targets,
             coord,
@@ -900,8 +808,6 @@ def _build_vex_documents(
             build_component,
             embargo,
             redact_embargoed,
-            repository=_repository_label(build_component, cve_vulns),
-            targets_by_vuln=targets_by_vuln if targets else None,
         )
 
     logger.info(
@@ -925,7 +831,6 @@ def convert_build_index(
     embargo: bool = False,
     redact_embargoed: bool = False,
     sbom_components: dict[str, dict[str, Any]] | None = None,
-    module_vulns: dict[str, list[str]] | None = None,
 ) -> VEXResult:
     """Generate VEX documents from a build-index.
 
@@ -967,7 +872,6 @@ def convert_build_index(
         embargo=embargo,
         redact_embargoed=redact_embargoed,
         sbom_components=sbom_components,
-        module_vulns=module_vulns,
     )
 
 
@@ -978,7 +882,6 @@ def convert(
     embargo: bool = False,
     redact_embargoed: bool = False,
     sbom_components: dict[str, dict[str, Any]] | None = None,
-    module_vulns: dict[str, list[str]] | None = None,
 ) -> VEXResult:
     """Generate VEX documents from a legacy PNC InputDocument."""
     coord = maven_coordinate(doc.primary_gav, doc.upstream_version)
@@ -1004,5 +907,4 @@ def convert(
         embargo=embargo,
         redact_embargoed=redact_embargoed,
         sbom_components=sbom_components,
-        module_vulns=module_vulns,
     )
