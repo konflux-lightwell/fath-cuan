@@ -122,6 +122,124 @@ MULTI_MODULE_BUILD_INDEX = {
 }
 
 
+_BOTH_MODULES = {
+    "com.fasterxml.woodstox:woodstox-core": ["CVE-2022-40152"],
+    "com.fasterxml.woodstox:woodstox-extra": ["CVE-2022-40152"],
+}
+
+
+def _module_record(name: str) -> dict:
+    return {"affected": [{"package": {"ecosystem": "Maven", "name": name}}]}
+
+
+def _mock_split_enrichment(cve_id, osidb_client=None):
+    """CVE-2022-45688 affects woodstox-core upstream, CVE-2023-5072 woodstox-extra."""
+    name = {
+        "CVE-2022-45688": "com.fasterxml.woodstox:woodstox-core",
+        "CVE-2023-5072": "com.fasterxml.woodstox:woodstox-extra",
+    }[cve_id]
+    return {"osidb_meta": None, "upstream": _module_record(name), "nvd": None}
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_split_enrichment)
+def test_vex_each_module_holds_only_its_vulns(mock_prefetch) -> None:
+    """LWLP-5917: a module's VEX never declares another module's fix."""
+    data = {**MULTI_MODULE_BUILD_INDEX, "vulns": ["CVE-2022-45688", "CVE-2023-5072"]}
+    result = convert_build_index(
+        BuildIndex.from_dict(data),
+        sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+    )
+
+    by_purl = {m.purl: m for m in result.modules}
+    assert [c for c, _ in by_purl[_WOODSTOX_PURL].per_cve] == ["CVE-2022-45688"]
+    assert [c for c, _ in by_purl[_EXTRA_PURL].per_cve] == ["CVE-2023-5072"]
+    assert by_purl[_WOODSTOX_PURL].multi_cve is None
+    # Build-wide documents list only the module each CVE was placed on.
+    legacy = dict(result.per_cve)
+    assert _affects_serials(legacy["CVE-2022-45688"]) == {
+        f"urn:cdx:{_SERIAL_CORE.removeprefix('urn:uuid:')}"
+    }
+    assert _affects_serials(legacy["CVE-2023-5072"]) == {
+        f"urn:cdx:{_SERIAL_EXTRA.removeprefix('urn:uuid:')}"
+    }
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_split_enrichment)
+def test_vex_module_datetimes_never_collide(mock_prefetch) -> None:
+    """Each further module's VEX datetime is one second later (unique filenames).
+
+    The primary module keeps the build datetime; the datetime is the same in
+    metadata.timestamp and every statement's published/updated, and does not
+    depend on the order of the vuln list.
+    """
+    for vulns in (["CVE-2022-45688", "CVE-2023-5072"], ["CVE-2023-5072", "CVE-2022-45688"]):
+        result = convert_build_index(
+            BuildIndex.from_dict({**MULTI_MODULE_BUILD_INDEX, "vulns": vulns}),
+            sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+        )
+
+        assert [(m.purl, m.timestamp) for m in result.modules] == [
+            (_WOODSTOX_PURL, "2026-08-06T16:00:00Z"),
+            (_EXTRA_PURL, "2026-08-06T16:00:01Z"),
+        ]
+        for module in result.modules:
+            for _, doc in module.per_cve:
+                assert doc["metadata"]["timestamp"] == module.timestamp
+                for vuln in doc["vulnerabilities"]:
+                    assert vuln["published"] == vuln["updated"] == module.timestamp
+
+
+def test_offset_timestamp_rolls_over() -> None:
+    from fath_cuan.converters.vex import _offset_timestamp
+
+    assert _offset_timestamp("2026-12-31T23:59:59Z", 0) == "2026-12-31T23:59:59Z"
+    assert _offset_timestamp("2026-12-31T23:59:59Z", 2) == "2027-01-01T00:00:01Z"
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_vuln_without_package_data_on_primary_only(mock_prefetch) -> None:
+    """No upstream package data and no OSIDB: the primary module (today's behaviour)."""
+    result = convert_build_index(
+        BuildIndex.from_dict(MULTI_MODULE_BUILD_INDEX),
+        sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+    )
+
+    assert [m.purl for m in result.modules] == [_WOODSTOX_PURL]
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_lw_recommendation_names_predisclosure(mock_prefetch) -> None:
+    """Novel fixes are released to the predisclosure repository (ADR-0055)."""
+    data = {**SAMPLE_BUILD_INDEX, "vulns": ["LW-2026-0571", "CVE-2022-40152"]}
+    result = convert_build_index(
+        BuildIndex.from_dict(data), sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS
+    )
+
+    for vuln in result.multi_cve["vulnerabilities"]:
+        assert "Red Hat Lightwell predisclosure repository." in vuln["recommendation"]
+        assert "remediated" not in vuln["recommendation"]
+
+
+@patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)
+def test_vex_recommendation_follows_component_repository(mock_prefetch) -> None:
+    """The SBOM subject's repository_url names the repository in the text."""
+    subject = {
+        "bom-ref": _WOODSTOX_PURL,
+        "name": "woodstox-core",
+        "version": "6.0.3.rhlw-00001",
+        "purl": _WOODSTOX_PURL
+        + "?repository_url=https://packages.redhat.com/lightwell/java/remediated/&type=jar",
+    }
+    result = convert_build_index(
+        BuildIndex.from_dict(SAMPLE_BUILD_INDEX),
+        sbom_serial_numbers=SAMPLE_SBOM_SERIAL_NUMBERS,
+        sbom_components={_WOODSTOX_PURL: subject},
+    )
+
+    vuln = result.per_cve[0][1]["vulnerabilities"][0]
+    assert "Red Hat Lightwell remediated repository." in vuln["recommendation"]
+
+
 def _affects_serials(doc: dict) -> set[str]:
     return {a["ref"].split("/", 1)[0] for v in doc["vulnerabilities"] for a in v["affects"]}
 
@@ -241,6 +359,7 @@ def test_vex_one_document_set_per_module(mock_prefetch) -> None:
     result = convert_build_index(
         bi,
         sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+        module_vulns=_BOTH_MODULES,
     )
 
     assert [m.purl for m in result.modules] == [_WOODSTOX_PURL, _EXTRA_PURL]
@@ -277,11 +396,17 @@ def test_vex_per_module_multi_cve_document(mock_prefetch) -> None:
     """A module fixing two CVEs gets a multi-CVE document with its metadata."""
     data = {**MULTI_MODULE_BUILD_INDEX, "vulns": ["CVE-2022-45688", "CVE-2023-5072"]}
     bi = BuildIndex.from_dict(data)
+    both = ["CVE-2022-45688", "CVE-2023-5072"]
     result = convert_build_index(
         bi,
         sbom_serial_numbers={_WOODSTOX_PURL: _SERIAL_CORE, _EXTRA_PURL: _SERIAL_EXTRA},
+        module_vulns={
+            "com.fasterxml.woodstox:woodstox-core": both,
+            "com.fasterxml.woodstox:woodstox-extra": both,
+        },
     )
 
+    assert len(result.modules) == 2
     for module in result.modules:
         assert [cve for cve, _ in module.per_cve] == ["CVE-2022-45688", "CVE-2023-5072"]
         assert module.multi_cve is not None
@@ -565,12 +690,11 @@ def test_extract_upstream_fix_ignores_other_projects() -> None:
     "listed",
     [
         "dom4j:dom4j",  # same artifactId, related groupId (project rename)
-        "org.dom4j:dom4j-core",  # same groupId
         "Org.Dom4j:Dom4j",  # exact match up to case
     ],
 )
 def test_extract_upstream_fix_falls_back_within_same_project(listed: str) -> None:
-    """Fallback is allowed when groupId or artifactId matches."""
+    """Fallback is allowed only for the same artifact under a renamed groupId."""
     from fath_cuan.converters.vex import _extract_upstream_fix
 
     record = _single_package_record(listed, "2.1.3")
@@ -578,6 +702,21 @@ def test_extract_upstream_fix_falls_back_within_same_project(listed: str) -> Non
         listed,
         "2.1.3",
     )
+
+
+@pytest.mark.parametrize(
+    ("listed", "package"),
+    [
+        ("org.dom4j:dom4j-core", "org.dom4j:dom4j"),
+        ("ch.qos.logback:logback-core", "ch.qos.logback:logback-classic"),
+    ],
+)
+def test_extract_upstream_fix_never_names_a_sibling_module(listed: str, package: str) -> None:
+    """LWLP-5917: a sibling module's fix (same groupId) is never named."""
+    from fath_cuan.converters.vex import _extract_upstream_fix
+
+    record = _single_package_record(listed, "1.5.13")
+    assert _extract_upstream_fix([record], "Maven", package, "1.5.9") == ("", "")
 
 
 @patch("fath_cuan.converters.vex._prefetch_enrichment", side_effect=_mock_no_enrichment)

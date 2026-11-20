@@ -2,8 +2,10 @@
 CVE's actually-vulnerable module (from upstream / OSIDB), matched to what the
 build produced — NOT the build's arbitrary primary coordinate (primaryGav)."""
 
+from datetime import UTC, datetime
 from unittest.mock import patch
 
+from fath_cuan.advisory_id import derive_advisory_id
 from fath_cuan.converters.osv import convert, convert_build_index
 from fath_cuan.models.build_index import BuildIndex
 from fath_cuan.models.input import InputDocument
@@ -307,13 +309,120 @@ def test_multi_cve_different_modules(mock_osv: object, mock_nvd: object) -> None
         "CVE-2025-00002": core,
     }.get(cve_id)
     results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY))
-    advisory = results[0]
-    names = [a.package.name for a in advisory.affected]
-    assert "ch.qos.logback:logback-classic" in names
-    assert "ch.qos.logback:logback-core" in names
-    assert len(advisory.affected) == 2
-    for aff in advisory.affected:
-        assert aff.package.ecosystem == "Red Hat Lightwell:Maven"
+
+    # LWLP-5917: one advisory per module, each with only its own CVEs.
+    by_module = {r.affected[0].package.name: r for r in results}
+    assert set(by_module) == {"ch.qos.logback:logback-classic", "ch.qos.logback:logback-core"}
+    for record in results:
+        assert len(record.affected) == 1
+        assert record.affected[0].package.ecosystem == "Red Hat Lightwell:Maven"
+    assert by_module["ch.qos.logback:logback-classic"].upstream == ["CVE-2025-00001"]
+    assert by_module["ch.qos.logback:logback-core"].upstream == ["CVE-2025-00002"]
+    # The primary module (logback-access) fixes nothing, so its ID is unused;
+    # each module's ID is derived from its own name and version.
+    assert by_module["ch.qos.logback:logback-core"].id == derive_advisory_id(
+        "Maven",
+        "ch.qos.logback:logback-core",
+        "1.2.11.rhlw-00001",
+        datetime(2026, 7, 15, tzinfo=UTC),
+    )
+    assert "RHLW-2026-00050" not in {r.id for r in results}
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_primary_module_keeps_advisory_id(mock_osv: object, mock_nvd: object) -> None:
+    """The primary module's advisory keeps the given ID; others get derived IDs."""
+    access = {
+        "affected": [{"package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-access"}}]
+    }
+    core = {
+        "affected": [{"package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-core"}}]
+    }
+    mock_osv.side_effect = lambda cve_id: {
+        "CVE-2025-00001": access,
+        "CVE-2025-00002": core,
+    }.get(cve_id)
+    results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY))
+
+    assert [r.affected[0].package.name for r in results] == [
+        "ch.qos.logback:logback-access",
+        "ch.qos.logback:logback-core",
+    ]
+    assert results[0].id == "RHLW-2026-00050"
+    assert results[0].upstream == ["CVE-2025-00001"]
+    assert results[1].id.startswith("RHLW-2026-") and results[1].id != "RHLW-2026-00050"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv")
+def test_cve_placed_from_ghsa_alias(mock_osv: object, mock_nvd: object) -> None:
+    """The package named only on the GHSA alias places the CVE (osv.dev + GHSA)."""
+    cve_record = {"aliases": ["GHSA-aaaa-bbbb-cccc"], "affected": []}
+    ghsa = {
+        "affected": [{"package": {"ecosystem": "Maven", "name": "ch.qos.logback:logback-core"}}]
+    }
+    mock_osv.side_effect = lambda vuln_id: {
+        "CVE-2025-00001": cve_record,
+        "GHSA-aaaa-bbbb-cccc": ghsa,
+    }.get(vuln_id)
+    data = {**MULTI_MODULE_ADVISORY, "vulns": ["CVE-2025-00001"]}
+    results = convert(InputDocument.from_dict(data))
+
+    assert len(results) == 1
+    assert results[0].affected[0].package.name == "ch.qos.logback:logback-core"
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_vuln_without_package_data_falls_back_to_primary(
+    mock_osv: object, mock_nvd: object
+) -> None:
+    """No upstream package data and no OSIDB: the primary module (today's behaviour)."""
+    results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY))
+
+    assert len(results) == 1
+    assert results[0].id == "RHLW-2026-00050"
+    assert results[0].affected[0].package.name == "ch.qos.logback:logback-access"
+    assert results[0].upstream == ["CVE-2025-00001", "CVE-2025-00002"]
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_explicit_module_placement_is_used(mock_osv: object, mock_nvd: object) -> None:
+    """A placement computed by the caller (slan-cuan) is used as given."""
+    placement = {
+        "ch.qos.logback:logback-classic": ["CVE-2025-00002"],
+        "ch.qos.logback:logback-core": ["CVE-2025-00001"],
+    }
+    results = convert(InputDocument.from_dict(MULTI_MODULE_ADVISORY), module_vulns=placement)
+
+    assert {r.affected[0].package.name: r.upstream for r in results} == {
+        "ch.qos.logback:logback-classic": ["CVE-2025-00002"],
+        "ch.qos.logback:logback-core": ["CVE-2025-00001"],
+    }
+
+
+@patch("fath_cuan.converters.osv._fetch_nvd", return_value=None)
+@patch("fath_cuan.converters.osv._fetch_upstream_osv", return_value=None)
+def test_lw_build_records_predisclosure_repository(mock_osv: object, mock_nvd: object) -> None:
+    """A build with an LW- ID is predisclosure content (ADR-0055)."""
+    data = {
+        **MULTI_MODULE_ADVISORY,
+        "vulns": ["LW-2026-0571"],
+        "primaryGav": "ch.qos.logback:logback-access:1.2.11.rhlw-00000-n-00001",
+        "gavs": ["ch.qos.logback:logback-access:1.2.11.rhlw-00000-n-00001"],
+    }
+    results = convert(InputDocument.from_dict(data))
+
+    meta = results[0].affected[0].database_specific.lightwell
+    assert meta.repository_url == "https://packages.redhat.com/lightwell/java/predisclosure/"
+    assert not any("nvd.nist.gov" in r.url for r in results[0].references)
+
+    override = convert(InputDocument.from_dict(data), repository_url="https://example.test/r/")
+    assert override[0].affected[0].database_specific.lightwell.repository_url == (
+        "https://example.test/r/"
+    )
 
 
 # ── extraPurls: ride-along artifacts must never drive OSV attribution ────────
