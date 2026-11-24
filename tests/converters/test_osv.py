@@ -1827,8 +1827,12 @@ def test_dropped_advisory_does_not_fall_back_to_legacy_records(
 
     (Embargoed LW- IDs are never left out, LWLP-6111; see test_embargo_rule.py.)
     """
+    embargoed_cve = {
+        "count": 1,
+        "results": [{**OSIDB_EMBARGOED_FLAW["results"][0], "cve_id": "CVE-2024-25710"}],
+    }
     client = OsidbClient(base_url="https://example.com", token="fake")
-    with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
+    with patch.object(client, "_get", return_value=embargoed_cve):
         doc = InputDocument.from_dict(
             {**SAMPLE_INPUT_DATA, "advisoryId": "RHLW-2026-5fc0229c48c1b99c"}
         )
