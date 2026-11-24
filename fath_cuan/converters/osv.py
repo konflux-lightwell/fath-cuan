@@ -106,7 +106,13 @@ def _repository_url(ecosystem: str, vulns: list[str], override: str | None = Non
     """Repository the build is released to: *override*, else derived from *vulns*.
 
     A build with any ``LW-`` ID is predisclosure content; otherwise it is
-    remediated content.
+    remediated content. The value is only written into the records
+    (``database_specific.lightwell.repository_url``); it doesn't decide where
+    they are published. slan-cuan's publish gate sends a build with any ``LW-``
+    ID only to predisclosure distributions, whatever this value says. For such
+    a build an *override* (slan-cuan's ``--repository-url``, empty in the
+    release pipeline) must point to predisclosure, or the records name the
+    wrong repository.
     """
     if override:
         return override
@@ -1118,13 +1124,23 @@ def _prefetch_all(
 def is_embargo_excluded(vuln_id: str, osidb_meta: dict[str, Any] | None) -> bool:
     """True when *vuln_id* is left out of OSV advisories and VEX documents.
 
-    One rule for both formats (ADR-0055 §3, LWLP-6111): release tooling decides
-    embargo by the ``LW-`` ID. A build that carries an ``LW-`` ID is embargoed as a
-    whole and the release gate publishes it only to predisclosure repositories,
-    so its ``LW-`` IDs are never left out, embargoed or not. A CVE that OSIDB
-    marks as embargoed is left out of both: under ADR-0005 an embargoed
-    vulnerability is Novel and should carry an ``LW-`` ID, so this only guards
-    against a misclassification and never adds data.
+    This only decides which IDs the documents name; fath-cuan doesn't decide
+    where they are published. One rule for both formats (ADR-0055 §3,
+    LWLP-6111): embargo is decided by the ``LW-`` ID. The publication gate is in
+    slan-cuan's publish step: a build with any ``LW-`` ID (in its GAV index or
+    in any generated record) is published only to Pulp distributions served at
+    a predisclosure path, and never to the public GitHub OSV repository. So
+    ``LW-`` IDs are never left out here, embargoed or not.
+
+    A CVE that OSIDB marks as embargoed is left out of both: under ADR-0005 an
+    embargoed vulnerability is Novel and should carry an ``LW-`` ID, so this
+    only guards against a misclassification and never adds data.
+
+    The rule covers the default mode, the only one the release pipeline uses.
+    The CLI stub modes (``--embargo``, ``--redact-embargoed``) are separate: OSV
+    falls back to the legacy ``x_RHLW-`` records there, which slan-cuan never
+    publishes. IDs are validated on input (``VULN_ID_PATTERNS``), so an ``LW-``
+    ID is always upper case here.
     """
     if vuln_id.startswith("LW-"):
         return False
