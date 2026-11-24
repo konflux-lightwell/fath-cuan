@@ -187,3 +187,54 @@ def test_external_nvd_ref_typed_as_advisory() -> None:
     }
     meta = extract_osidb_metadata(flaw)
     assert meta["references"][0]["type"] == "ADVISORY"
+
+
+# ── LWLP-6012: exact flaw match and per-client cache ─────────────────────────
+
+
+def _results(*ids: str) -> dict:
+    return {
+        "count": len(ids),
+        "results": [
+            {"vulnerability_id" if i.startswith("LW-") else "cve_id": i, "title": i} for i in ids
+        ],
+    }
+
+
+def test_get_flaw_picks_the_exact_match_among_several() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-00231", "LW-2026-0023")):
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+
+
+def test_get_flaw_ignores_a_single_non_matching_result(caplog) -> None:
+    """The search can return one different flaw; it must not be used."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-10180")):
+        assert client.get_flaw("LW-2026-10181") is None
+    assert "none with that ID (LW-2026-10180)" in caplog.text
+
+
+def test_get_flaw_no_results() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value={"count": 0, "results": []}):
+        assert client.get_flaw("LW-2026-10181") is None
+
+
+def test_get_flaw_caches_answers() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-0023")) as get:
+        first = client.get_flaw("LW-2026-0023")
+        first["title"] = "changed by a caller"
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+        client.get_flaw("LW-2026-9999")  # "no exact match" is an answer too
+        client.get_flaw("LW-2026-9999")
+    assert get.call_count == 2
+
+
+def test_get_flaw_does_not_cache_failed_requests() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", side_effect=[None, _results("LW-2026-0023")]) as get:
+        assert client.get_flaw("LW-2026-0023") is None
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+    assert get.call_count == 2

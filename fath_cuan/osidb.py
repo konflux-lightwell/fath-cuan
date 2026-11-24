@@ -12,9 +12,11 @@ Environment variables:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
 from typing import Any
@@ -68,6 +70,10 @@ class OsidbClient:
         self._token = token or _obtain_token(self._base_url)
         if not self._token:
             log.warning("No OSIDB token available — OSIDB enrichment disabled")
+        # Flaw lookups for this client's run (LWLP-6012): placement, OSV and VEX
+        # ask for the same IDs. Only answers are cached, never failed requests.
+        self._flaws: dict[str, dict[str, Any] | None] = {}
+        self._flaws_lock = threading.Lock()
 
     @property
     def available(self) -> bool:
@@ -95,7 +101,18 @@ class OsidbClient:
             return None
 
     def get_flaw(self, vuln_id: str) -> dict[str, Any] | None:
-        """Fetch a single flaw by vulnerability_id (LW-YYYY-NNNN) or CVE ID."""
+        """Fetch the flaw whose ``vulnerability_id`` or ``cve_id`` is *vuln_id*.
+
+        OSIDB's ``search`` is not an exact lookup: it can return other flaws, or a
+        single flaw with a different ID. Only an exact ID match is returned;
+        otherwise None, with a warning (LWLP-6012). A wrong flaw would carry the
+        wrong embargo state and component names into module placement and the
+        security data. Answers are cached per client; a failed request returns
+        None and is not cached.
+        """
+        with self._flaws_lock:
+            if vuln_id in self._flaws:
+                return copy.deepcopy(self._flaws[vuln_id])
         data = self._get(
             _FLAWS_PATH,
             {
@@ -104,21 +121,27 @@ class OsidbClient:
                 "limit": "5",
             },
         )
-        if not data:
+        if data is None:
             return None
 
-        results = data.get("results", [])
-        if not results:
-            return None
-
-        if len(results) == 1:
-            return results[0]  # type: ignore[no-any-return]
-
-        for r in results:
-            if r.get("vulnerability_id") == vuln_id or r.get("cve_id") == vuln_id:
-                return r  # type: ignore[no-any-return]
-
-        return results[0]  # type: ignore[no-any-return]
+        results = data.get("results") or []
+        match = next(
+            (r for r in results if vuln_id in (r.get("vulnerability_id"), r.get("cve_id"))),
+            None,
+        )
+        if match is None and results:
+            others = sorted(
+                {str(r.get("vulnerability_id") or r.get("cve_id") or "?") for r in results}
+            )
+            log.warning(
+                "OSIDB search for %s returned %d flaw(s), none with that ID (%s); ignoring them",
+                vuln_id,
+                len(results),
+                ", ".join(others),
+            )
+        with self._flaws_lock:
+            self._flaws[vuln_id] = match
+        return copy.deepcopy(match)
 
 
 def extract_osidb_metadata(flaw: dict[str, Any]) -> dict[str, Any]:
