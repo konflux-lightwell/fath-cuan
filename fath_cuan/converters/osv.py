@@ -106,7 +106,13 @@ def _repository_url(ecosystem: str, vulns: list[str], override: str | None = Non
     """Repository the build is released to: *override*, else derived from *vulns*.
 
     A build with any ``LW-`` ID is predisclosure content; otherwise it is
-    remediated content.
+    remediated content. The value is only written into the records
+    (``database_specific.lightwell.repository_url``); it doesn't decide where
+    they are published. slan-cuan's publish gate sends a build with any ``LW-``
+    ID only to predisclosure distributions, whatever this value says. For such
+    a build an *override* (slan-cuan's ``--repository-url``, empty in the
+    release pipeline) must point to predisclosure, or the records name the
+    wrong repository.
     """
     if override:
         return override
@@ -1115,6 +1121,32 @@ def _prefetch_all(
         return {v: fut.result() for v, fut in futures.items()}
 
 
+def is_embargo_excluded(vuln_id: str, osidb_meta: dict[str, Any] | None) -> bool:
+    """True when *vuln_id* is left out of OSV advisories and VEX documents.
+
+    This only decides which IDs the documents name; fath-cuan doesn't decide
+    where they are published. One rule for both formats (ADR-0055 §3,
+    LWLP-6111): embargo is decided by the ``LW-`` ID. The publication gate is in
+    slan-cuan's publish step: a build with any ``LW-`` ID (in its GAV index or
+    in any generated record) is published only to Pulp distributions served at
+    a predisclosure path, and never to the public GitHub OSV repository. So
+    ``LW-`` IDs are never left out here, embargoed or not.
+
+    A CVE that OSIDB marks as embargoed is left out of both: under ADR-0005 an
+    embargoed vulnerability is Novel and should carry an ``LW-`` ID, so this
+    only guards against a misclassification and never adds data.
+
+    The rule covers the default mode, the only one the release pipeline uses.
+    The CLI stub modes (``--embargo``, ``--redact-embargoed``) are separate: OSV
+    falls back to the legacy ``x_RHLW-`` records there, which slan-cuan never
+    publishes. IDs are validated on input (``VULN_ID_PATTERNS``), so an ``LW-``
+    ID is always upper case here.
+    """
+    if vuln_id.startswith("LW-"):
+        return False
+    return bool(osidb_meta and osidb_meta.get("embargoed"))
+
+
 def place_vulnerabilities(
     vulns: list[str],
     coord: Coordinate,
@@ -1147,8 +1179,8 @@ def place_vulnerabilities(
     returning None, so an outage fails the release instead of reaching the
     primary-module fallback. A public CVE that does reach the fallback is
     logged as a warning.
-    Embargo does not affect placement: the OSV leaves embargoed IDs out, the
-    VEX keeps ``LW-`` IDs for predisclosure.
+    Embargo does not affect placement; :func:`is_embargo_excluded` decides
+    which IDs the OSV and the VEX leave out (embargoed CVEs, never ``LW-`` IDs).
     """
     candidates = _candidate_index(built_coords)
     placed: dict[str, list[str]] = {}
@@ -1208,8 +1240,9 @@ def _build_advisory_record(
     """Build the OSV advisory for ONE module and the vulns placed on it.
 
     Every ID in *vulns* has already been placed on *module* by
-    :func:`place_vulnerabilities`; embargoed IDs are left out. Returns an
-    empty list when nothing remains to publish.
+    :func:`place_vulnerabilities`; IDs excluded by :func:`is_embargo_excluded`
+    (embargoed CVEs) are left out, ``LW-`` IDs always stay. Returns an empty list
+    when nothing remains to publish.
     """
     cve_ids: list[str] = []
     ghsa_ids: list[str] = []
@@ -1225,7 +1258,7 @@ def _build_advisory_record(
         upstream: dict[str, Any] | None = data.get("upstream")
         nvd: dict[str, Any] | None = data.get("nvd")
 
-        if osidb_meta and osidb_meta.get("embargoed"):
+        if is_embargo_excluded(cve_id, osidb_meta):
             logger.warning("Skipping embargoed %s in advisory %s", cve_id, advisory_id)
             continue
 
@@ -1550,7 +1583,8 @@ def _build_records(
     ``x_RHLW-`` records are no longer emitted beside it (LWLP-5093). The
     placement comes from *module_vulns* when the caller computed it (see
     :func:`place_vulnerabilities`), otherwise it is computed here. A module
-    whose vulnerabilities are all embargoed yields no record.
+    whose vulnerabilities are all embargoed CVEs yields no record; ``LW-`` IDs
+    are always kept (:func:`is_embargo_excluded`).
 
     The legacy per-CVE loop only runs without an ``advisory_id`` or in the
     ``embargo`` / ``redact_embargoed`` stub modes (fath-cuan CLI).
