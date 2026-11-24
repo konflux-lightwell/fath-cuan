@@ -23,6 +23,7 @@ from fath_cuan.converters.osv import (
     _is_public_url,
     _norm_name,
     _version_cmp,
+    is_embargo_excluded,
     place_vulnerabilities,
 )
 from fath_cuan.ecosystems import (
@@ -729,9 +730,9 @@ def _build_doc_set(
             )
             continue
 
-        # Non-embargoed but OSIDB says embargoed: drop entirely. LW- IDs are
-        # embargoed by definition and are never dropped (see _LW_PREFIX).
-        if osidb_meta and osidb_meta.get("embargoed") and not _is_lw(cve_id):
+        # Not in a stub mode but OSIDB says embargoed: drop embargoed CVEs. LW-
+        # IDs are never dropped. Same rule as the OSV (is_embargo_excluded).
+        if is_embargo_excluded(cve_id, osidb_meta):
             logger.warning(
                 "Dropping embargoed %s from VEX (not in redact mode)",
                 cve_id,

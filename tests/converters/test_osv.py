@@ -1823,11 +1823,14 @@ def test_advisory_path_emits_only_the_rhlw_record(
 def test_dropped_advisory_does_not_fall_back_to_legacy_records(
     mock_osv: object, mock_nvd: object
 ) -> None:
-    """An advisory with only embargoed CVEs yields nothing, not x_RHLW- records."""
+    """An advisory with only embargoed CVEs yields nothing, not x_RHLW- records.
+
+    (Embargoed LW- IDs are never left out, LWLP-6111; see test_embargo_rule.py.)
+    """
     client = OsidbClient(base_url="https://example.com", token="fake")
     with patch.object(client, "_get", return_value=OSIDB_EMBARGOED_FLAW):
         doc = InputDocument.from_dict(
-            {**SAMPLE_NOVEL_INPUT, "advisoryId": "RHLW-2026-5fc0229c48c1b99c"}
+            {**SAMPLE_INPUT_DATA, "advisoryId": "RHLW-2026-5fc0229c48c1b99c"}
         )
         results = convert(doc, osidb_client=client)
 
