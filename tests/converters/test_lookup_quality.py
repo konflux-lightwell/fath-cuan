@@ -100,6 +100,47 @@ def test_overlap_query_empty_answer_is_no_advisories(mock_urlopen) -> None:
     assert real_fetch_advisories("org.example:a", "Maven") == []
 
 
+@patch(_URLOPEN)
+def test_overlap_query_follows_next_page_token(mock_urlopen) -> None:
+    """Advisories on later pages count for the overlap guard too."""
+    mock_urlopen.side_effect = [
+        _response({"vulns": [{"id": "RHLW-2026-1"}], "next_page_token": "p2"}),
+        _response({"vulns": [{"id": "RHLW-2026-2"}]}),
+    ]
+    found = real_fetch_advisories("org.example:a", "Maven")
+
+    assert [a["id"] for a in found] == ["RHLW-2026-1", "RHLW-2026-2"]
+    second = json.loads(mock_urlopen.call_args_list[1].args[0].data)
+    assert second["page_token"] == "p2"
+
+
+def _html_response() -> MagicMock:
+    resp = MagicMock()
+    resp.read.return_value = b"<html>502 Bad Gateway</html>"
+    resp.__enter__.return_value = resp
+    return resp
+
+
+@patch(_SLEEP)
+@patch(_URLOPEN)
+def test_body_that_is_not_json_is_retried(mock_urlopen, mock_sleep) -> None:
+    """A proxy error page with HTTP 200 is a transient failure, not a crash."""
+    record = {"id": "CVE-2099-0009", "aliases": []}
+    mock_urlopen.side_effect = [_html_response(), _response(record)]
+
+    assert _fetch_upstream_osv("CVE-2099-0009") == record
+    assert mock_urlopen.call_count == 2
+
+
+@patch(_SLEEP)
+@patch(_URLOPEN)
+def test_body_that_is_never_json_raises(mock_urlopen, mock_sleep) -> None:
+    mock_urlopen.side_effect = lambda *a, **k: _html_response()
+
+    with pytest.raises(UpstreamFetchError, match=r"osv\.dev lookup for CVE-2099-0010"):
+        _fetch_upstream_osv("CVE-2099-0010")
+
+
 # ── Per-run caches: answers cached, failures not, callers get copies ─────────
 
 

@@ -18,6 +18,7 @@ import logging
 import os
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -27,7 +28,7 @@ _DEFAULT_URL = "https://osidb.lightwell.redhat.com"
 _TOKEN_PATH = "/auth/token"
 _FLAWS_PATH = "/osidb/api/v1/flaws"
 # ``search`` is a text search, so other flaws can rank above the exact match;
-# fetch enough results to find it.
+# fetch enough results to find it when the exact-ID query finds nothing.
 _SEARCH_LIMIT = "50"
 
 _FLAW_FIELDS = (
@@ -93,8 +94,7 @@ class OsidbClient:
 
         url = f"{self._base_url}{path}"
         if params:
-            qs = "&".join(f"{k}={v}" for k, v in params.items())
-            url = f"{url}?{qs}"
+            url = f"{url}?{urllib.parse.urlencode(params)}"
 
         req = urllib.request.Request(
             url,
@@ -111,8 +111,12 @@ class OsidbClient:
     def get_flaw(self, vuln_id: str) -> dict[str, Any] | None:
         """Fetch the flaw whose ``vulnerability_id`` or ``cve_id`` is *vuln_id*.
 
-        OSIDB's ``search`` is not an exact lookup: it can return other flaws, or a
-        single flaw with a different ID. Only an exact ID match is returned;
+        Asks with an exact-ID filter first (``vulnerability_id`` for ``LW-``
+        IDs, ``cve_id`` otherwise), then, if that finds no match, with the text
+        ``search`` (which can rank other flaws first, or return one flaw with a
+        different ID). The text search stays as the fallback in case the
+        instance ignores the exact filter. Either way, only a flaw whose
+        ``vulnerability_id`` or ``cve_id`` equals *vuln_id* is returned;
         otherwise None, with a warning (LWLP-6012). A wrong flaw would carry the
         wrong embargo state and component names into module placement and the
         security data. Answers are cached per client; a failed request returns
@@ -121,22 +125,24 @@ class OsidbClient:
         with self._flaws_lock:
             if vuln_id in self._flaws:
                 return copy.deepcopy(self._flaws[vuln_id])
-        data = self._get(
-            _FLAWS_PATH,
-            {
-                "search": vuln_id,
-                "include_fields": _FLAW_FIELDS,
-                "limit": _SEARCH_LIMIT,
-            },
+        exact_field = "vulnerability_id" if vuln_id.startswith("LW-") else "cve_id"
+        queries = (
+            {exact_field: vuln_id, "include_fields": _FLAW_FIELDS, "limit": "5"},
+            {"search": vuln_id, "include_fields": _FLAW_FIELDS, "limit": _SEARCH_LIMIT},
         )
-        if data is None:
-            return None
-
-        results = data.get("results") or []
-        match = next(
-            (r for r in results if vuln_id in (r.get("vulnerability_id"), r.get("cve_id"))),
-            None,
-        )
+        match: dict[str, Any] | None = None
+        results: list[dict[str, Any]] = []
+        for params in queries:
+            data = self._get(_FLAWS_PATH, params)
+            if data is None:
+                return None
+            results = data.get("results") or []
+            match = next(
+                (r for r in results if vuln_id in (r.get("vulnerability_id"), r.get("cve_id"))),
+                None,
+            )
+            if match is not None:
+                break
         if match is None and results:
             others = sorted(
                 {str(r.get("vulnerability_id") or r.get("cve_id") or "?") for r in results}

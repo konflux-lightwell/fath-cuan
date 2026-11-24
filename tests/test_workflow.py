@@ -165,6 +165,36 @@ def test_resolve_module_vulns_starts_with_empty_caches() -> None:
     client.clear_cache.assert_called_once_with()
 
 
+def test_process_osv_without_placement_starts_with_empty_caches() -> None:
+    """Callers that don't place first (fath-cuan CLI, snapshot flow) start clean."""
+    client = MagicMock()
+    with patch("fath_cuan.converters.osv.clear_caches") as clear:
+        process_osv({**_LOGBACK_GAV_INDEX, "vulns": []}, osidb_client=client)
+    clear.assert_called_once_with()
+    client.clear_cache.assert_called_once_with()
+
+
+def test_process_osv_with_placement_reuses_caches() -> None:
+    """After resolve_module_vulns, OSV and VEX reuse its answers."""
+    with patch("fath_cuan.converters.osv.clear_caches") as clear:
+        process_osv({**_LOGBACK_GAV_INDEX, "vulns": []}, module_vulns={})
+    clear.assert_not_called()
+
+
+def test_osidb_stub_without_clear_cache_is_accepted() -> None:
+    """A client that only offers available/get_flaw still works."""
+
+    class StubClient:
+        available = True
+
+        def get_flaw(self, vuln_id: str) -> None:
+            return None
+
+    assert (
+        resolve_module_vulns({**_LOGBACK_GAV_INDEX, "vulns": []}, osidb_client=StubClient()) == {}
+    )
+
+
 @patch("fath_cuan.converters.osv._fetch_nvd")
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", side_effect=_logback_upstream)
 def test_resolve_module_vulns_skips_nvd(mock_osv: MagicMock, mock_nvd: MagicMock) -> None:

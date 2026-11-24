@@ -15,6 +15,18 @@ from fath_cuan.osidb import OsidbClient
 logger = logging.getLogger(__name__)
 
 
+def _start_build(osidb_client: OsidbClient | None) -> None:
+    """Empty the lookup caches before a build (see ``osv.clear_caches``).
+
+    A process that handles more than one build must never reuse an earlier
+    answer, such as an osv.dev 404 for a CVE that wasn't imported yet.
+    """
+    osv_converter.clear_caches()
+    clear_osidb = getattr(osidb_client, "clear_cache", None)
+    if clear_osidb is not None:
+        clear_osidb()
+
+
 def _is_build_index(input_json: dict[str, Any]) -> bool:
     """Distinguish a unified build-index from a legacy PNC gav-index.
 
@@ -53,14 +65,10 @@ def resolve_module_vulns(
     documents name exactly the same modules. See
     :func:`fath_cuan.converters.osv.place_vulnerabilities` for the rules.
 
-    This is the first step for a build, so it clears the lookup caches
-    (osv.dev, NVD and *osidb_client*'s flaws) before it starts: a process
-    that handles more than one build never reuses an earlier answer, such as
-    an osv.dev 404 for a CVE that wasn't imported yet (LWLP-6012).
+    This is the first step for a build, so it starts with empty lookup
+    caches (osv.dev, NVD and *osidb_client*'s flaws; LWLP-6012).
     """
-    osv_converter.clear_caches()
-    if osidb_client is not None:
-        osidb_client.clear_cache()
+    _start_build(osidb_client)
     vulns = list(input_json.get("vulns") or [])
     if not vulns:
         return {}
@@ -94,7 +102,13 @@ def process_osv(
     :func:`resolve_module_vulns`, or computed). *repository_url* overrides
     the repository recorded in the advisories (default: predisclosure for a
     build with ``LW-`` IDs, remediated otherwise).
+
+    Without *module_vulns* this is the build's first step, so it starts with
+    empty lookup caches; with them, it reuses the answers of
+    :func:`resolve_module_vulns`. :func:`process_vex` follows on the same build.
     """
+    if module_vulns is None:
+        _start_build(osidb_client)
     if _is_build_index(input_json):
         logger.info(
             "Processing OSV from build-index (%s)",

@@ -1,4 +1,6 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
 
@@ -249,7 +251,47 @@ def test_get_flaw_caches_answers() -> None:
         assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
         client.get_flaw("LW-2026-9999")  # "no exact match" is an answer too
         client.get_flaw("LW-2026-9999")
-    assert get.call_count == 2
+    # LW-2026-0023: exact query; LW-2026-9999: exact query + text search, once
+    assert get.call_count == 3
+
+
+@pytest.mark.parametrize(
+    ("vuln_id", "field"),
+    [("LW-2026-0023", "vulnerability_id"), ("CVE-2026-0023", "cve_id")],
+)
+def test_get_flaw_asks_by_exact_id_first(vuln_id: str, field: str) -> None:
+    """An exact-ID filter, not the text search, when it finds the flaw."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results(vuln_id)) as get:
+        assert client.get_flaw(vuln_id)["title"] == vuln_id
+    assert get.call_count == 1
+    params = get.call_args.args[1]
+    assert params[field] == vuln_id
+    assert "search" not in params
+
+
+def test_get_flaw_falls_back_to_text_search() -> None:
+    """If the exact-ID query finds no match (e.g. the filter is ignored), search."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    answers = [_results("LW-2026-0001", "LW-2026-0002"), _results("LW-2026-0023")]
+    with patch.object(client, "_get", side_effect=answers) as get:
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+    assert [sorted(c.args[1]) for c in get.call_args_list] == [
+        ["include_fields", "limit", "vulnerability_id"],
+        ["include_fields", "limit", "search"],
+    ]
+
+
+def test_get_url_encodes_parameters() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    resp = MagicMock()
+    resp.read.return_value = b'{"count": 0, "results": []}'
+    resp.__enter__.return_value = resp
+    with patch("fath_cuan.osidb.urllib.request.urlopen", return_value=resp) as urlopen:
+        client._get("/osidb/api/v1/flaws", {"search": "a&b #c", "limit": "5"})
+    assert urlopen.call_args.args[0].full_url == (
+        "https://example.com/osidb/api/v1/flaws?search=a%26b+%23c&limit=5"
+    )
 
 
 def test_get_flaw_does_not_cache_failed_requests() -> None:
