@@ -53,7 +53,9 @@ def _osidb(embargoed: set[str]) -> OsidbClient:
     client = OsidbClient(base_url="https://example.com", token="fake")
 
     def _get(path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        vuln_id = (params or {})["search"]
+        # The ID asked for, whether by an exact-ID filter or the text search.
+        params = params or {}
+        vuln_id = params.get("search") or params.get("vulnerability_id") or params["cve_id"]
         return {"count": 1, "results": [_flaw(vuln_id, vuln_id in embargoed)]}
 
     client._get = _get  # type: ignore[method-assign]
