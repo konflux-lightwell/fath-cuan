@@ -156,6 +156,15 @@ def test_resolve_module_vulns_without_vulns() -> None:
     assert resolve_module_vulns({**_LOGBACK_GAV_INDEX, "vulns": []}) == {}
 
 
+def test_resolve_module_vulns_starts_with_empty_caches() -> None:
+    """A second build in the same process doesn't reuse the first build's answers."""
+    client = MagicMock()
+    with patch("fath_cuan.converters.osv.clear_caches") as clear:
+        resolve_module_vulns({**_LOGBACK_GAV_INDEX, "vulns": []}, osidb_client=client)
+    clear.assert_called_once_with()
+    client.clear_cache.assert_called_once_with()
+
+
 @patch("fath_cuan.converters.osv._fetch_nvd")
 @patch("fath_cuan.converters.osv._fetch_upstream_osv", side_effect=_logback_upstream)
 def test_resolve_module_vulns_skips_nvd(mock_osv: MagicMock, mock_nvd: MagicMock) -> None:

@@ -215,6 +215,26 @@ def test_get_flaw_ignores_a_single_non_matching_result(caplog) -> None:
     assert "none with that ID (LW-2026-10180)" in caplog.text
 
 
+def test_get_flaw_ignores_several_non_matching_results(caplog) -> None:
+    """Several results, none with the ID: main returned results[0] here."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(
+        client, "_get", return_value=_results("LW-2026-10180", "CVE-2026-10181")
+    ) as get:
+        assert client.get_flaw("LW-2026-10181") is None
+    assert "returned 2 flaw(s), none with that ID (CVE-2026-10181, LW-2026-10180)" in caplog.text
+    assert get.call_args.args[1]["limit"] == "50"
+
+
+def test_get_flaw_clear_cache() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-0023")) as get:
+        client.get_flaw("LW-2026-0023")
+        client.clear_cache()
+        client.get_flaw("LW-2026-0023")
+    assert get.call_count == 2
+
+
 def test_get_flaw_no_results() -> None:
     client = OsidbClient(base_url="https://example.com", token="fake")
     with patch.object(client, "_get", return_value={"count": 0, "results": []}):

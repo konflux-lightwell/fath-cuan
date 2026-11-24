@@ -70,7 +70,12 @@ _NVD_CACHE: dict[str, dict[str, Any] | None] = {}
 
 
 def clear_caches() -> None:
-    """Forget every cached osv.dev and NVD lookup (tests, long-running processes)."""
+    """Forget every cached osv.dev and NVD lookup.
+
+    The caches serve one build: placement, OSV and VEX ask for the same IDs.
+    :func:`fath_cuan.workflow.resolve_module_vulns` calls this at the start of
+    each build; tests call it around every test.
+    """
     with _CACHE_LOCK:
         _UPSTREAM_CACHE.clear()
         _ADVISORY_CACHE.clear()

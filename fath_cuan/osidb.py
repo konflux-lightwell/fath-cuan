@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 _DEFAULT_URL = "https://osidb.lightwell.redhat.com"
 _TOKEN_PATH = "/auth/token"
 _FLAWS_PATH = "/osidb/api/v1/flaws"
+# ``search`` is a text search, so other flaws can rank above the exact match;
+# fetch enough results to find it.
+_SEARCH_LIMIT = "50"
 
 _FLAW_FIELDS = (
     "uuid,vulnerability_id,cve_id,title,impact,source,cwe_id,"
@@ -75,6 +78,11 @@ class OsidbClient:
         self._flaws: dict[str, dict[str, Any] | None] = {}
         self._flaws_lock = threading.Lock()
 
+    def clear_cache(self) -> None:
+        """Forget the cached flaw lookups (a new build starts)."""
+        with self._flaws_lock:
+            self._flaws.clear()
+
     @property
     def available(self) -> bool:
         return self._token is not None
@@ -118,7 +126,7 @@ class OsidbClient:
             {
                 "search": vuln_id,
                 "include_fields": _FLAW_FIELDS,
-                "limit": "5",
+                "limit": _SEARCH_LIMIT,
             },
         )
         if data is None:

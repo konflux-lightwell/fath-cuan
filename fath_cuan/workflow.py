@@ -52,7 +52,15 @@ def resolve_module_vulns(
     choose the SBOMs to enrich) so the OSV advisories, SBOMs and VEX
     documents name exactly the same modules. See
     :func:`fath_cuan.converters.osv.place_vulnerabilities` for the rules.
+
+    This is the first step for a build, so it clears the lookup caches
+    (osv.dev, NVD and *osidb_client*'s flaws) before it starts: a process
+    that handles more than one build never reuses an earlier answer, such as
+    an osv.dev 404 for a CVE that wasn't imported yet (LWLP-6012).
     """
+    osv_converter.clear_caches()
+    if osidb_client is not None:
+        osidb_client.clear_cache()
     vulns = list(input_json.get("vulns") or [])
     if not vulns:
         return {}
