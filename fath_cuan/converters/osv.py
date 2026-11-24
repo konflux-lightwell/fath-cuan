@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
+import http.client
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -54,6 +57,36 @@ _OSV_RETRY_BASE_DELAY = 1.0
 _OSV_RETRY_MAX_DELAY = 10.0
 
 logger = logging.getLogger(__name__)
+
+
+# Per-run caches (LWLP-6012): one generate-security-metadata run builds the
+# placement, the OSV advisories and the VEX from the same lookups, so each ID is
+# fetched once. Only definitive answers are cached (a record, or "not found");
+# failed lookups never are. Callers get copies, so they cannot change the cache.
+_CACHE_LOCK = threading.Lock()
+_UPSTREAM_CACHE: dict[str, dict[str, Any] | None] = {}
+_ADVISORY_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
+_NVD_CACHE: dict[str, dict[str, Any] | None] = {}
+
+
+# Safety bound for the paginated advisory query (one page holds many records).
+_OSV_QUERY_MAX_PAGES = 20
+
+
+def clear_caches() -> None:
+    """Forget every cached osv.dev and NVD lookup.
+
+    The caches serve one build: placement, OSV and VEX ask for the same IDs.
+    They are per process, so a process handles one build at a time. Each
+    build starts with empty caches: :func:`fath_cuan.workflow.resolve_module_vulns`
+    clears them, and so does :func:`fath_cuan.workflow.process_osv` when the
+    caller didn't place the vulnerabilities first. Tests clear them around
+    every test.
+    """
+    with _CACHE_LOCK:
+        _UPSTREAM_CACHE.clear()
+        _ADVISORY_CACHE.clear()
+        _NVD_CACHE.clear()
 
 
 class UpstreamFetchError(RuntimeError):
@@ -158,39 +191,44 @@ _MAX_ALIAS_FETCHES = 5
 def _fetch_lightwell_advisories(package_name: str, osv_ecosystem: str) -> list[dict[str, Any]]:
     """Fetch published Lightwell advisories for a package from osv.dev.
 
-    Issues a single POST to the OSV query API scoped to the
-    ``Red Hat Lightwell:<ecosystem>`` ecosystem. Returns the full
-    advisory records (typically 0-5 per package), or an empty list
-    on network failure.
+    POSTs to the OSV query API scoped to the ``Red Hat Lightwell:<ecosystem>``
+    ecosystem, following ``next_page_token`` until the last page, and returns
+    the full advisory records (typically 0-5 per package). The range-overlap guard
+    (:func:`_nonoverlapping_introduced`) depends on this answer, so a failed
+    query is retried and then raised as :class:`UpstreamFetchError`; it is never
+    read as "no advisories", which would leave the new advisory at
+    ``introduced: 0`` and overlap other release lines (LWLP-6012).
     """
+    key = (package_name, osv_ecosystem)
+    with _CACHE_LOCK:
+        if key in _ADVISORY_CACHE:
+            return copy.deepcopy(_ADVISORY_CACHE[key])
     ecosystem = f"Red Hat Lightwell:{osv_ecosystem}"
-    payload = json.dumps({"package": {"name": package_name, "ecosystem": ecosystem}}).encode()
-    req = urllib.request.Request(
-        _OSV_QUERY,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-    logger.debug(
-        "Fetching Lightwell advisories for %s in %s",
-        package_name,
-        ecosystem,
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            results = data.get("vulns", [])
-            logger.debug(
-                "Found %d existing advisory/ies for %s",
-                len(results),
-                package_name,
-            )
-            return results  # type: ignore[no-any-return]
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-        logger.debug("Could not fetch Lightwell advisories for %s", package_name)
-        return []
+    what = f"osv.dev query for {package_name} advisories"
+    logger.debug("Fetching Lightwell advisories for %s in %s", package_name, ecosystem)
+    results: list[dict[str, Any]] = []
+    query: dict[str, Any] = {"package": {"name": package_name, "ecosystem": ecosystem}}
+    for _page in range(_OSV_QUERY_MAX_PAGES):
+        req = urllib.request.Request(
+            _OSV_QUERY,
+            data=json.dumps(query).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        answer = _osv_request(req, what, none_on_404=False) or {}
+        results.extend(answer.get("vulns", []))
+        token = answer.get("next_page_token")
+        if not token:
+            break
+        query = {**query, "page_token": token}
+    else:
+        raise UpstreamFetchError(f"{what} failed: more than {_OSV_QUERY_MAX_PAGES} pages")
+    logger.debug("Found %d existing advisory/ies for %s", len(results), package_name)
+    with _CACHE_LOCK:
+        _ADVISORY_CACHE[key] = results
+    return copy.deepcopy(results)
 
 
 def _nonoverlapping_introduced(
@@ -312,62 +350,91 @@ def _retry_delay(err: Exception, attempt: int) -> float:
     return float(min(delay, _OSV_RETRY_MAX_DELAY))
 
 
-def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
-    """Fetch the upstream OSV record for a CVE or GHSA ID from osv.dev.
+def _osv_request(req: urllib.request.Request, what: str, none_on_404: bool) -> Any:
+    """Send an osv.dev request with retries; return the decoded JSON answer.
 
-    Returns None only when osv.dev has no record (HTTP 404). Any other
-    failure (429, 5xx, other HTTP errors, network errors, timeouts) is
-    retried up to ``_OSV_FETCH_ATTEMPTS`` times and then raised as
-    :class:`UpstreamFetchError`: module placement treats None as "no package
-    data" and would otherwise put the CVE on the primary module.
+    Returns None only for HTTP 404 when *none_on_404* is set ("no record").
+    Transient failures (429, 5xx, network errors, timeouts, connections
+    dropped mid-response, and a body that isn't JSON, such as a proxy's error
+    page) are retried up to ``_OSV_FETCH_ATTEMPTS`` times; other 4xx errors are
+    not. When they persist, :class:`UpstreamFetchError` is raised.
     """
-    url = f"{_OSV_API}/{urllib.parse.quote(cve_id, safe='')}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
     last_err: Exception | None = None
     for attempt in range(1, _OSV_FETCH_ATTEMPTS + 1):
-        logger.debug("Fetching upstream OSV for %s (attempt %d)", cve_id, attempt)
+        logger.debug("%s (attempt %d)", what, attempt)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                logger.debug("Received upstream OSV response for %s", cve_id)
-                return json.loads(resp.read())  # type: ignore[no-any-return]
+                return json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            if e.code == 404:
-                logger.debug("No upstream OSV record for %s", cve_id)
+            if e.code == 404 and none_on_404:
                 return None
             last_err = e
             # Other 4xx errors (except 429) will not change on retry.
             if 400 <= e.code < 500 and e.code != 429:
                 break
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # URLError, timeouts, resets, connections dropped mid-response
+            # (RemoteDisconnected, IncompleteRead), which urllib does not wrap,
+            # and a body that isn't JSON (JSONDecodeError is a ValueError).
             last_err = e
         if attempt < _OSV_FETCH_ATTEMPTS:
             delay = _retry_delay(last_err, attempt)
-            logger.warning(
-                "osv.dev lookup for %s failed (%s); retrying in %.0fs",
-                cve_id,
-                last_err,
-                delay,
-            )
+            logger.warning("%s failed (%s); retrying in %.0fs", what, last_err, delay)
             time.sleep(delay)
-    raise UpstreamFetchError(f"osv.dev lookup for {cve_id} failed: {last_err}") from last_err
+    raise UpstreamFetchError(f"{what} failed: {last_err}") from last_err
+
+
+def _fetch_upstream_osv(cve_id: str) -> dict[str, Any] | None:
+    """Fetch the upstream OSV record for a CVE or GHSA ID from osv.dev.
+
+    Returns None only when osv.dev has no record (HTTP 404). Any other
+    failure is retried (see :func:`_osv_request`) and then raised as
+    :class:`UpstreamFetchError`: module placement treats None as "no package
+    data" and would otherwise put the CVE on the primary module. Answers are
+    cached for the run.
+    """
+    with _CACHE_LOCK:
+        if cve_id in _UPSTREAM_CACHE:
+            return copy.deepcopy(_UPSTREAM_CACHE[cve_id])
+    url = f"{_OSV_API}/{urllib.parse.quote(cve_id, safe='')}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    record: dict[str, Any] | None = _osv_request(
+        req, f"osv.dev lookup for {cve_id}", none_on_404=True
+    )
+    if record is None:
+        logger.debug("No upstream OSV record for %s", cve_id)
+    with _CACHE_LOCK:
+        _UPSTREAM_CACHE[cve_id] = record
+    return copy.deepcopy(record)
 
 
 def _fetch_nvd(cve_id: str) -> dict[str, Any] | None:
-    """Fetch CVE data from NVD as a fallback for missing summary/severity."""
+    """Fetch CVE data from NVD as a fallback for missing summary/severity.
+
+    An answer (data or "no vulnerabilities") is cached for the run, so the OSV
+    and VEX conversions don't both call the rate-limited NVD API. A failed
+    request returns None and is not cached.
+    """
+    with _CACHE_LOCK:
+        if cve_id in _NVD_CACHE:
+            return copy.deepcopy(_NVD_CACHE[cve_id])
     url = f"{_NVD_API}?cveId={urllib.parse.quote(cve_id, safe='')}"
     logger.debug("Fetching NVD data for %s", cve_id)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-            vulns = data.get("vulnerabilities", [])
-            if vulns:
-                logger.debug("Received NVD data for %s", cve_id)
-                return vulns[0].get("cve", {})  # type: ignore[no-any-return]
-            logger.debug("No NVD vulnerabilities found for %s", cve_id)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
         logger.warning("NVD fetch failed for %s: %s", cve_id, e)
-    return None
+        return None
+    vulns = data.get("vulnerabilities", [])
+    result: dict[str, Any] | None = vulns[0].get("cve", {}) if vulns else None
+    logger.debug(
+        "Received NVD data for %s" if result else "No NVD vulnerabilities found for %s", cve_id
+    )
+    with _CACHE_LOCK:
+        _NVD_CACHE[cve_id] = result
+    return copy.deepcopy(result)
 
 
 def _fetch_jira(lw_id: str, client: JiraClient | None = None) -> VulnerabilityData | None:

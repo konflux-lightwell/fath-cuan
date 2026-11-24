@@ -1,4 +1,6 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from fath_cuan.osidb import OsidbClient, extract_osidb_metadata
 
@@ -187,3 +189,114 @@ def test_external_nvd_ref_typed_as_advisory() -> None:
     }
     meta = extract_osidb_metadata(flaw)
     assert meta["references"][0]["type"] == "ADVISORY"
+
+
+# ── LWLP-6012: exact flaw match and per-client cache ─────────────────────────
+
+
+def _results(*ids: str) -> dict:
+    return {
+        "count": len(ids),
+        "results": [
+            {"vulnerability_id" if i.startswith("LW-") else "cve_id": i, "title": i} for i in ids
+        ],
+    }
+
+
+def test_get_flaw_picks_the_exact_match_among_several() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-00231", "LW-2026-0023")):
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+
+
+def test_get_flaw_ignores_a_single_non_matching_result(caplog) -> None:
+    """The search can return one different flaw; it must not be used."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-10180")):
+        assert client.get_flaw("LW-2026-10181") is None
+    assert "none with that ID (LW-2026-10180)" in caplog.text
+
+
+def test_get_flaw_ignores_several_non_matching_results(caplog) -> None:
+    """Several results, none with the ID: main returned results[0] here."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(
+        client, "_get", return_value=_results("LW-2026-10180", "CVE-2026-10181")
+    ) as get:
+        assert client.get_flaw("LW-2026-10181") is None
+    assert "returned 2 flaw(s), none with that ID (CVE-2026-10181, LW-2026-10180)" in caplog.text
+    assert get.call_args.args[1]["limit"] == "50"
+
+
+def test_get_flaw_clear_cache() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-0023")) as get:
+        client.get_flaw("LW-2026-0023")
+        client.clear_cache()
+        client.get_flaw("LW-2026-0023")
+    assert get.call_count == 2
+
+
+def test_get_flaw_no_results() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value={"count": 0, "results": []}):
+        assert client.get_flaw("LW-2026-10181") is None
+
+
+def test_get_flaw_caches_answers() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results("LW-2026-0023")) as get:
+        first = client.get_flaw("LW-2026-0023")
+        first["title"] = "changed by a caller"
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+        client.get_flaw("LW-2026-9999")  # "no exact match" is an answer too
+        client.get_flaw("LW-2026-9999")
+    # LW-2026-0023: exact query; LW-2026-9999: exact query + text search, once
+    assert get.call_count == 3
+
+
+@pytest.mark.parametrize(
+    ("vuln_id", "field"),
+    [("LW-2026-0023", "vulnerability_id"), ("CVE-2026-0023", "cve_id")],
+)
+def test_get_flaw_asks_by_exact_id_first(vuln_id: str, field: str) -> None:
+    """An exact-ID filter, not the text search, when it finds the flaw."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", return_value=_results(vuln_id)) as get:
+        assert client.get_flaw(vuln_id)["title"] == vuln_id
+    assert get.call_count == 1
+    params = get.call_args.args[1]
+    assert params[field] == vuln_id
+    assert "search" not in params
+
+
+def test_get_flaw_falls_back_to_text_search() -> None:
+    """If the exact-ID query finds no match (e.g. the filter is ignored), search."""
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    answers = [_results("LW-2026-0001", "LW-2026-0002"), _results("LW-2026-0023")]
+    with patch.object(client, "_get", side_effect=answers) as get:
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+    assert [sorted(c.args[1]) for c in get.call_args_list] == [
+        ["include_fields", "limit", "vulnerability_id"],
+        ["include_fields", "limit", "search"],
+    ]
+
+
+def test_get_url_encodes_parameters() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    resp = MagicMock()
+    resp.read.return_value = b'{"count": 0, "results": []}'
+    resp.__enter__.return_value = resp
+    with patch("fath_cuan.osidb.urllib.request.urlopen", return_value=resp) as urlopen:
+        client._get("/osidb/api/v1/flaws", {"search": "a&b #c", "limit": "5"})
+    assert urlopen.call_args.args[0].full_url == (
+        "https://example.com/osidb/api/v1/flaws?search=a%26b+%23c&limit=5"
+    )
+
+
+def test_get_flaw_does_not_cache_failed_requests() -> None:
+    client = OsidbClient(base_url="https://example.com", token="fake")
+    with patch.object(client, "_get", side_effect=[None, _results("LW-2026-0023")]) as get:
+        assert client.get_flaw("LW-2026-0023") is None
+        assert client.get_flaw("LW-2026-0023")["title"] == "LW-2026-0023"
+    assert get.call_count == 2

@@ -12,10 +12,13 @@ Environment variables:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
+import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -24,6 +27,9 @@ log = logging.getLogger(__name__)
 _DEFAULT_URL = "https://osidb.lightwell.redhat.com"
 _TOKEN_PATH = "/auth/token"
 _FLAWS_PATH = "/osidb/api/v1/flaws"
+# ``search`` is a text search, so other flaws can rank above the exact match;
+# fetch enough results to find it when the exact-ID query finds nothing.
+_SEARCH_LIMIT = "50"
 
 _FLAW_FIELDS = (
     "uuid,vulnerability_id,cve_id,title,impact,source,cwe_id,"
@@ -68,6 +74,15 @@ class OsidbClient:
         self._token = token or _obtain_token(self._base_url)
         if not self._token:
             log.warning("No OSIDB token available — OSIDB enrichment disabled")
+        # Flaw lookups for this client's run (LWLP-6012): placement, OSV and VEX
+        # ask for the same IDs. Only answers are cached, never failed requests.
+        self._flaws: dict[str, dict[str, Any] | None] = {}
+        self._flaws_lock = threading.Lock()
+
+    def clear_cache(self) -> None:
+        """Forget the cached flaw lookups (a new build starts)."""
+        with self._flaws_lock:
+            self._flaws.clear()
 
     @property
     def available(self) -> bool:
@@ -79,8 +94,7 @@ class OsidbClient:
 
         url = f"{self._base_url}{path}"
         if params:
-            qs = "&".join(f"{k}={v}" for k, v in params.items())
-            url = f"{url}?{qs}"
+            url = f"{url}?{urllib.parse.urlencode(params)}"
 
         req = urllib.request.Request(
             url,
@@ -95,30 +109,53 @@ class OsidbClient:
             return None
 
     def get_flaw(self, vuln_id: str) -> dict[str, Any] | None:
-        """Fetch a single flaw by vulnerability_id (LW-YYYY-NNNN) or CVE ID."""
-        data = self._get(
-            _FLAWS_PATH,
-            {
-                "search": vuln_id,
-                "include_fields": _FLAW_FIELDS,
-                "limit": "5",
-            },
+        """Fetch the flaw whose ``vulnerability_id`` or ``cve_id`` is *vuln_id*.
+
+        Asks with an exact-ID filter first (``vulnerability_id`` for ``LW-``
+        IDs, ``cve_id`` otherwise), then, if that finds no match, with the text
+        ``search`` (which can rank other flaws first, or return one flaw with a
+        different ID). The text search stays as the fallback in case the
+        instance ignores the exact filter. Either way, only a flaw whose
+        ``vulnerability_id`` or ``cve_id`` equals *vuln_id* is returned;
+        otherwise None, with a warning (LWLP-6012). A wrong flaw would carry the
+        wrong embargo state and component names into module placement and the
+        security data. Answers are cached per client; a failed request returns
+        None and is not cached.
+        """
+        with self._flaws_lock:
+            if vuln_id in self._flaws:
+                return copy.deepcopy(self._flaws[vuln_id])
+        exact_field = "vulnerability_id" if vuln_id.startswith("LW-") else "cve_id"
+        queries = (
+            {exact_field: vuln_id, "include_fields": _FLAW_FIELDS, "limit": "5"},
+            {"search": vuln_id, "include_fields": _FLAW_FIELDS, "limit": _SEARCH_LIMIT},
         )
-        if not data:
-            return None
-
-        results = data.get("results", [])
-        if not results:
-            return None
-
-        if len(results) == 1:
-            return results[0]  # type: ignore[no-any-return]
-
-        for r in results:
-            if r.get("vulnerability_id") == vuln_id or r.get("cve_id") == vuln_id:
-                return r  # type: ignore[no-any-return]
-
-        return results[0]  # type: ignore[no-any-return]
+        match: dict[str, Any] | None = None
+        results: list[dict[str, Any]] = []
+        for params in queries:
+            data = self._get(_FLAWS_PATH, params)
+            if data is None:
+                return None
+            results = data.get("results") or []
+            match = next(
+                (r for r in results if vuln_id in (r.get("vulnerability_id"), r.get("cve_id"))),
+                None,
+            )
+            if match is not None:
+                break
+        if match is None and results:
+            others = sorted(
+                {str(r.get("vulnerability_id") or r.get("cve_id") or "?") for r in results}
+            )
+            log.warning(
+                "OSIDB search for %s returned %d flaw(s), none with that ID (%s); ignoring them",
+                vuln_id,
+                len(results),
+                ", ".join(others),
+            )
+        with self._flaws_lock:
+            self._flaws[vuln_id] = match
+        return copy.deepcopy(match)
 
 
 def extract_osidb_metadata(flaw: dict[str, Any]) -> dict[str, Any]:

@@ -6,6 +6,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _clear_lookup_caches():
+    """Start every test with empty osv.dev/NVD caches (they live for a run)."""
+    from fath_cuan.converters.osv import clear_caches
+
+    clear_caches()
+    yield
+    clear_caches()
+
+
+@pytest.fixture(autouse=True)
 def _no_lightwell_advisory_network(request):
     """Prevent real HTTP calls to osv.dev for sibling advisory lookups.
 
